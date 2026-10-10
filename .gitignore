@@ -1,0 +1,38 @@
+# Secrets and environment-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python environments and generated caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Private databases and SQLite transient files
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Runtime output and trained artifacts
+logs/
+reports/
+models/*
+!models/.gitkeep
+data/*
+!data/.gitkeep
+
+# Superseded desktop-app backups contain obsolete demo credentials.
+/project3.py
+/project3_backup.py
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

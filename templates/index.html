@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL-X | SOC Dashboard</title>
+    <style>
+        :root {
+            --bg: #070B14;
+            --header: #050810;
+            --panel: #0E1726;
+            --border: #20344F;
+            --cyan: #00D9FF;
+            --green: #00F5A0;
+            --red: #FF4567;
+            --muted: #8EA4C2;
+            --text: #EAF4FF;
+        }
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 250px;
+            background-color: var(--header);
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--cyan);
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .main-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            color: var(--bg);
+        }
+        .btn-start { background-color: var(--green); }
+        .btn-pause { background-color: #FFD166; }
+        .btn-sim { background-color: var(--red); }
+        .status { margin-left: auto; font-family: monospace; font-size: 16px; color: var(--muted); }
+        
+        .cards {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .card {
+            flex: 1;
+            background-color: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+        .card h3 { margin: 0 0 10px 0; font-size: 14px; color: var(--muted); }
+        .card .value { font-size: 32px; font-weight: bold; font-family: monospace; }
+        
+        .events-table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: var(--panel);
+            border: 1px solid var(--border);
+        }
+        .events-table th, .events-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        .events-table th { color: var(--cyan); }
+        .row-CRITICAL { color: var(--red); }
+        .row-HIGH { color: #FF9F43; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo">◈ SENTINEL-X</div>
+        <p style="color: var(--muted); text-align: center; font-family: monospace;">AI SOC PLATFORM</p>
+    </div>
+    
+    <div class="main-content">
+        <div class="toolbar">
+            <button class="btn-start" onclick="startMonitor()">▶ START MONITOR</button>
+            <button class="btn-pause" onclick="pauseMonitor()">Ⅱ PAUSE</button>
+            <button class="btn-sim" onclick="simulate()">⚡ CRITICAL SIMULATION</button>
+            <div class="status" id="statusLabel">MODE: IDLE</div>
+        </div>
+        
+        <div class="cards">
+            <div class="card">
+                <h3>TOTAL EVENTS</h3>
+                <div class="value" id="valEvents" style="color: var(--green)">0</div>
+            </div>
+            <div class="card">
+                <h3>CRITICAL</h3>
+                <div class="value" id="valCritical" style="color: var(--red)">0</div>
+            </div>
+            <div class="card">
+                <h3>DEVICES</h3>
+                <div class="value" id="valDevices" style="color: var(--cyan)">0</div>
+            </div>
+        </div>
+        
+        <h3 style="color: var(--cyan);">LIVE THREAT FEED</h3>
+        <table class="events-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Source IP</th>
+                    <th>Destination IP</th>
+                    <th>Risk</th>
+                    <th>Severity</th>
+                    <th>Factors</th>
+                </tr>
+            </thead>
+            <tbody id="eventsBody">
+                <!-- Rows injected by JS -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        function updateDashboard() {
+            fetch('/api/stats')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('statusLabel').innerText = "MODE: " + data.status;
+                    document.getElementById('valEvents').innerText = data.events;
+                    document.getElementById('valCritical').innerText = data.critical;
+                    document.getElementById('valDevices').innerText = data.devices;
+                    
+                    const tbody = document.getElementById('eventsBody');
+                    tbody.innerHTML = '';
+                    data.recent_events.forEach(ev => {
+                        const tr = document.createElement('tr');
+                        tr.className = "row-" + ev.severity;
+                        tr.innerHTML = `
+                            <td>${ev.timestamp}</td>
+                            <td>${ev.source_ip}:${ev.port}</td>
+                            <td>${ev.destination_ip}</td>
+                            <td>${ev.risk}</td>
+                            <td>${ev.severity}</td>
+                            <td>${ev.factors}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                });
+        }
+
+        function startMonitor() { fetch('/api/start', {method: 'POST'}).then(updateDashboard); }
+        function pauseMonitor() { fetch('/api/pause', {method: 'POST'}).then(updateDashboard); }
+        function simulate() { fetch('/api/simulate', {method: 'POST'}).then(updateDashboard); }
+
+        setInterval(updateDashboard, 1500);
+        updateDashboard();
+    </script>
+</body>
+</html>

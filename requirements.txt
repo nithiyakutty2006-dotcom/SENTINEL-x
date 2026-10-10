@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+scapy
+numpy
+keras
+tensorflow
+pymupdf
+reportlab
+python-multipart
+pydantic
+pytest
+httpx

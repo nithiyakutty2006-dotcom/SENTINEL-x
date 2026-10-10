@@ -1,0 +1,33 @@
+from app.database import get_db_connection, audit_log_event
+from app.passwords import hash_password, verify_password
+
+def authenticate_user(username: str, password: str):
+    conn = get_db_connection()
+    row = conn.execute("""
+        SELECT username, password, role
+        FROM users
+        WHERE username=?
+    """, (username,)).fetchone()
+    
+    if row and verify_password(row["password"], password):
+        # Auto-migrate plaintext demo passwords to hashed passwords on successful login
+        if row["password"] == password:
+            hashed = hash_password(password)
+            conn.execute("UPDATE users SET password=? WHERE username=?", (hashed, username))
+            conn.commit()
+            
+        audit_log_event(username, "Successful web authentication")
+        return {"username": row["username"], "role": row["role"]}
+    
+    return None
+
+def check_permission(user_role: str, allowed_roles: list) -> bool:
+    """
+    Check if the user's role is in the list of allowed roles.
+    ADMIN has access to all actions.
+    """
+    if not user_role:
+        return False
+    if user_role == "ADMIN":
+        return True
+    return user_role in allowed_roles
