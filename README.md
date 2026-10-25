@@ -162,12 +162,17 @@ python main.py
 
 ## ☁️ Deploying the Existing App to Render
 
-Create a Render **Web Service** for this repository and use:
+The checked-in [`render.yaml`](./render.yaml) defines the Web Service build and
+start commands and selects demo monitoring. For an existing Render Web Service,
+update its settings to match this file (or sync it if it is already
+Blueprint-managed); do not create a second service just for this change or add a
+conflicting start command.
 
 - **Python version environment variable:** `PYTHON_VERSION=3.13.12` (matches the
   locally tested Python version)
 - **Build command:** `pip install -r requirements.txt`
 - **Start command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+- **Monitoring mode:** `SENTINEL_MONITORING_MODE=demo`
 
 Set `SENTINEL_ADMIN_PASSWORD` in Render's service Environment settings to a new,
 unique password. Optionally set the analyst/viewer environment variable pairs
