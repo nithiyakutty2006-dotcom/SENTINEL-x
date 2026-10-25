@@ -31,6 +31,17 @@ function showMonitoringError(message) {
     alert(`Monitoring error: ${message}`);
 }
 
+function showTableError(tableBodyId, columnCount, error) {
+    const tbody = document.getElementById(tableBodyId);
+    if (!tbody) return;
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = columnCount;
+    cell.textContent = `Unable to load data: ${error.message}`;
+    row.appendChild(cell);
+    tbody.replaceChildren(row);
+}
+
 // Tab Subtitles Map
 const tabTitles = {
     dashboard: { title: "SECURITY COMMAND CENTER", sub: "Real-time network traffic telemetry and Deep Learning anomaly detection" },
@@ -64,7 +75,7 @@ window.onload = function() {
 function handleLogin(event) {
     event.preventDefault();
     const u = document.getElementById('loginUser').value.trim();
-    const p = document.getElementById('loginPass').value.trim();
+    const p = document.getElementById('loginPass').value;
     const errDiv = document.getElementById('loginError');
 
     fetch('/api/auth/login', {
@@ -72,9 +83,10 @@ function handleLogin(event) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: u, password: p })
     })
-    .then(res => {
-        if (!res.ok) throw new Error("Invalid username or password");
-        return res.json();
+    .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Login failed.");
+        return data;
     })
     .then(data => {
         currentUser = data.user.username;
@@ -363,7 +375,7 @@ function fetchEvents() {
     const url = `/api/events?search=${encodeURIComponent(q)}&severity=${sev}&protocol=${proto}&source_type=${src}`;
     
     fetch(url)
-        .then(res => res.json())
+        .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('eventsTableBody');
             tbody.innerHTML = '';
@@ -387,7 +399,8 @@ function fetchEvents() {
                 `;
                 tbody.appendChild(tr);
             });
-        });
+        })
+        .catch(err => showTableError('eventsTableBody', 14, err));
 }
 
 function showEventDetail(id) {
@@ -425,7 +438,7 @@ function closeModal(id) {
 function fetchIncidents() {
     const status = document.getElementById('incidentStatusFilter')?.value || 'ALL';
     fetch(`/api/incidents?status=${status}`)
-        .then(res => res.json())
+        .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('incidentsTableBody');
             tbody.innerHTML = '';
@@ -450,7 +463,8 @@ function fetchIncidents() {
                 `;
                 tbody.appendChild(tr);
             });
-        });
+        })
+        .catch(err => showTableError('incidentsTableBody', 9, err));
 }
 
 function updateIncidentStatus(id, newStatus) {
@@ -465,7 +479,7 @@ function updateIncidentStatus(id, newStatus) {
 // Fetch Devices
 function fetchDevices() {
     fetch('/api/devices')
-        .then(res => res.json())
+        .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('devicesTableBody');
             tbody.innerHTML = '';
@@ -473,6 +487,7 @@ function fetchDevices() {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td><b>${d.device}</b></td>
+                    <td><span class="badge">${d.source_type || 'REAL'}</span></td>
                     <td>${d.avg_packets.toFixed(1)}</td>
                     <td>${d.avg_traffic.toFixed(3)} MB</td>
                     <td>${d.avg_connections.toFixed(1)}</td>
@@ -483,13 +498,14 @@ function fetchDevices() {
                 `;
                 tbody.appendChild(tr);
             });
-        });
+        })
+        .catch(err => showTableError('devicesTableBody', 9, err));
 }
 
 // Fetch Alerts
 function fetchAlerts() {
     fetch('/api/alerts')
-        .then(res => res.json())
+        .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('alertsTableBody');
             tbody.innerHTML = '';
@@ -511,7 +527,8 @@ function fetchAlerts() {
                 `;
                 tbody.appendChild(tr);
             });
-        });
+        })
+        .catch(err => showTableError('alertsTableBody', 9, err));
 }
 
 function acknowledgeAlert(id) {

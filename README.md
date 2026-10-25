@@ -152,13 +152,22 @@ in an existing database. `.env.example` documents the variable names but is not
 loaded automatically; set the values in your shell or hosting provider. Keep
 real values out of source control.
 
-For example, in PowerShell, set the account values in the current terminal
-before starting the app:
+In the VS Code integrated PowerShell terminal, set the account values in that
+terminal before starting the app. Use a unique password you choose; do not use
+the placeholder from `.env.example` as a real password:
 
 ```powershell
+$env:SENTINEL_ADMIN_USERNAME = "admin"
 $env:SENTINEL_ADMIN_PASSWORD = "your-unique-password"
 python main.py
 ```
+
+Then sign in with username `admin` and the password you set. The environment
+variables apply only to processes started from that terminal. Alternatively,
+configure them in your VS Code launch configuration's `env` settings. The
+`.env.example` file is documentation only and is not loaded automatically.
+These variables bootstrap accounts only when the database users table is empty;
+they do not change credentials in an existing database.
 
 ## ☁️ Deploying the Existing App to Render
 
@@ -226,6 +235,7 @@ instance until server-side authorization is implemented and verified.
 
 - **Real Monitoring**: Click **▶ START MONITOR** in the top toolbar on a supported host. Scapy captures actual packets flowing through the host network adapter and aggregates them according to the configured interval (default 1.5s).
 - **Demo Monitoring**: On Render, or when `SENTINEL_MONITORING_MODE=demo`, the same start button starts continuous synthetic events. The dashboard identifies this as **DEMO MONITORING**, and each event is tagged `DEMO`; it is not real network telemetry.
+- Demo events use the separate `DEMO-SENSOR-01` inventory entry. Every fifth event is an explicitly simulated high-risk example so the configured detection rules can demonstrate incident and alert creation; those pages remain empty until an event meets the risk trigger.
 - **Demo Mode**: Click **⚡ DEMO SIMULATION** to trigger high-volume synthetic threat scenarios for demonstrations without generating real network flood.
 
 ---

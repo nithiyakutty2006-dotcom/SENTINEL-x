@@ -1,6 +1,11 @@
 from app.database import get_db_connection, audit_log_event
 from app.passwords import hash_password, verify_password
 
+
+class AuthenticationConfigurationError(Exception):
+    """Raised when the database has no configured login accounts."""
+
+
 def authenticate_user(username: str, password: str):
     conn = get_db_connection()
     row = conn.execute("""
@@ -9,6 +14,13 @@ def authenticate_user(username: str, password: str):
         WHERE username=?
     """, (username,)).fetchone()
     
+    if row is None and conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is None:
+        raise AuthenticationConfigurationError(
+            "No login accounts are configured. Set SENTINEL_ADMIN_USERNAME and "
+            "SENTINEL_ADMIN_PASSWORD, then restart the application with an empty "
+            "users table to initialize the admin account."
+        )
+
     if row and verify_password(row["password"], password):
         # Auto-migrate plaintext demo passwords to hashed passwords on successful login
         if row["password"] == password:

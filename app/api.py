@@ -5,7 +5,11 @@ from typing import Optional, List
 import os
 
 from app.database import get_db_connection, get_setting, set_setting, audit_log_event
-from app.auth import authenticate_user, check_permission
+from app.auth import (
+    AuthenticationConfigurationError,
+    authenticate_user,
+    check_permission,
+)
 from app.monitoring import monitoring_service
 from app.detection import model_manager
 from app.reports_gen import generate_pdf_report, generate_csv_report
@@ -37,7 +41,10 @@ class SimulationRequest(BaseModel):
 # 1. Authentication Endpoints
 @router.post("/auth/login")
 def login(req: LoginRequest):
-    user = authenticate_user(req.username, req.password)
+    try:
+        user = authenticate_user(req.username, req.password)
+    except AuthenticationConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     return {"success": True, "user": user}
@@ -216,7 +223,18 @@ def update_incident(incident_id: int, req: IncidentUpdateRequest, username: str 
 @router.get("/devices")
 def get_devices():
     conn = get_db_connection()
-    devices = conn.execute("SELECT * FROM device_baseline ORDER BY samples DESC").fetchall()
+    devices = conn.execute("""
+        SELECT d.*,
+            COALESCE((
+                SELECT e.source_type
+                FROM events e
+                WHERE e.device = d.device
+                ORDER BY e.id DESC
+                LIMIT 1
+            ), 'REAL') AS source_type
+        FROM device_baseline d
+        ORDER BY d.samples DESC
+    """).fetchall()
     
     result = []
     for d in devices:

@@ -33,6 +33,7 @@ class MonitoringService:
         self.connection_counts = defaultdict(int)
         self.protocol_counts = defaultdict(int)
         self.total_packets_captured = 0
+        self.demo_event_count = 0
         self.last_packet_time = None
         self.capture_thread = None
         self.accumulator_thread = None
@@ -176,17 +177,19 @@ class MonitoringService:
     def _demo_loop(self):
         while self.running:
             try:
+                self.demo_event_count += 1
+                is_threat_simulation = self.demo_event_count % 5 == 0
                 event = {
                     "timestamp": now_string(),
                     "device": "DEMO-SENSOR-01",
                     "source_ip": "192.0.2.10",
                     "destination_ip": "198.51.100.20",
-                    "port": random.choice([53, 80, 443, 8080]),
+                    "port": 8080 if is_threat_simulation else random.choice([53, 80, 443]),
                     "protocol": random.choice(["TCP", "UDP"]),
-                    "packets": random.randint(10, 250),
-                    "traffic": round(random.uniform(0.01, 1.5), 3),
-                    "connections": random.randint(1, 20),
-                    "unknown": 0,
+                    "packets": 2501 if is_threat_simulation else random.randint(10, 250),
+                    "traffic": 8.1 if is_threat_simulation else round(random.uniform(0.01, 1.5), 3),
+                    "connections": 101 if is_threat_simulation else random.randint(1, 20),
+                    "unknown": 11 if is_threat_simulation else 0,
                     "source_type": "DEMO"
                 }
                 process_event(event)

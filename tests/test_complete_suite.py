@@ -1,6 +1,7 @@
 import unittest
 import os
 import json
+import sqlite3
 import secrets
 import time
 from unittest.mock import patch
@@ -46,6 +47,45 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
 
         user_fail = authenticate_user("admin", self.test_password + "-wrong")
         self.assertIsNone(user_fail)
+
+    def test_03a_login_api_accepts_configured_credentials(self):
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": self.test_password},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["user"], {"username": "admin", "role": "ADMIN"})
+
+    def test_03b_login_api_rejects_incorrect_credentials(self):
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": self.test_password + "-wrong"},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], "Invalid username or password.")
+
+    def test_03c_login_api_reports_missing_configuration(self):
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE users(
+                username TEXT PRIMARY KEY,
+                password TEXT,
+                role TEXT
+            )
+        """)
+        try:
+            with patch("app.auth.get_db_connection", return_value=conn):
+                response = client.post(
+                    "/api/auth/login",
+                    json={"username": "admin", "password": self.test_password},
+                )
+        finally:
+            conn.close()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("SENTINEL_ADMIN_USERNAME", response.json()["detail"])
+        self.assertIn("SENTINEL_ADMIN_PASSWORD", response.json()["detail"])
 
     # 4. Role-Based Permissions
     def test_04_role_permissions(self):
@@ -237,8 +277,10 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
     # 22. Demo Monitoring Emits Labeled Events and Stops
     def test_22_demo_monitoring_start_and_stop(self):
         original_mode = monitoring_service.monitoring_mode
+        original_demo_event_count = monitoring_service.demo_event_count
         monitoring_service.pause_monitoring()
         monitoring_service.monitoring_mode = "demo"
+        monitoring_service.demo_event_count = 4
         try:
             with patch(
                 "app.monitoring.get_setting",
@@ -270,6 +312,19 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
 
                 self.assertIsNotNone(row)
                 self.assertEqual(row["source_type"], "DEMO")
+                conn = get_db_connection()
+                generated_threat = conn.execute("""
+                    SELECT risk, source_type FROM events
+                    WHERE device='DEMO-SENSOR-01'
+                    ORDER BY id DESC LIMIT 1
+                """).fetchone()
+                self.assertGreaterEqual(generated_threat["risk"], 60)
+                self.assertEqual(generated_threat["source_type"], "DEMO")
+                demo_device = next(
+                    device for device in client.get("/api/devices").json()
+                    if device["device"] == "DEMO-SENSOR-01"
+                )
+                self.assertEqual(demo_device["source_type"], "DEMO")
                 stopped = client.post("/api/monitoring/stop?username=admin&role=ADMIN")
                 self.assertEqual(stopped.status_code, 200)
                 self.assertTrue(stopped.json()["success"])
@@ -278,12 +333,80 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
                 calls_at_pause = process_event_mock.call_count
                 time.sleep(0.3)
                 self.assertEqual(process_event_mock.call_count, calls_at_pause)
+
+                restarted = client.post("/api/monitoring/start?username=admin&role=ADMIN")
+                self.assertEqual(restarted.status_code, 200)
+                self.assertTrue(restarted.json()["success"])
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and process_event_mock.call_count <= calls_at_pause:
+                    time.sleep(0.05)
+                self.assertGreater(process_event_mock.call_count, calls_at_pause)
+                self.assertTrue(client.post(
+                    "/api/monitoring/pause?username=admin&role=ADMIN"
+                ).json()["success"])
         finally:
             monitoring_service.pause_monitoring()
             monitoring_service.monitoring_mode = original_mode
+            monitoring_service.demo_event_count = original_demo_event_count
+
+    # 23. Demo Events Persist, Register a Device, and Trigger Qualified Alerts
+    def test_23_demo_event_persistence_inventory_and_detection(self):
+        device = f"DEMO-REGRESSION-{secrets.token_hex(4)}"
+        benign_event = {
+            "timestamp": "2026-10-25 12:00:00",
+            "device": device,
+            "source_ip": "192.0.2.10",
+            "destination_ip": "198.51.100.20",
+            "port": 443,
+            "protocol": "TCP",
+            "packets": 100,
+            "traffic": 0.5,
+            "connections": 10,
+            "unknown": 0,
+            "source_type": "DEMO",
+        }
+        process_event(benign_event)
+
+        conn = get_db_connection()
+        self.assertIsNone(conn.execute(
+            "SELECT id FROM incidents WHERE device=?", (device,)
+        ).fetchone())
+        self.assertIsNone(conn.execute(
+            "SELECT id FROM alerts WHERE device=?", (device,)
+        ).fetchone())
+
+        threat_event = {
+            **benign_event,
+            "timestamp": "2026-10-25 12:00:01",
+            "port": 8080,
+            "packets": 2501,
+            "traffic": 8.1,
+            "connections": 101,
+            "unknown": 11,
+        }
+        processed = process_event(threat_event)
+        self.assertGreaterEqual(processed["risk"], 60)
+        self.assertEqual(processed["source_type"], "DEMO")
+
+        events = client.get(f"/api/events?search={device}&source_type=DEMO")
+        incidents = client.get("/api/incidents?status=ALL")
+        alerts = client.get("/api/alerts")
+        devices = client.get("/api/devices")
+        self.assertEqual(events.status_code, 200)
+        self.assertEqual(incidents.status_code, 200)
+        self.assertEqual(alerts.status_code, 200)
+        self.assertEqual(devices.status_code, 200)
+        self.assertTrue(any(row["device"] == device and row["source_type"] == "DEMO"
+                            for row in events.json()))
+        self.assertTrue(any(row["device"] == device and row["source_type"] == "DEMO"
+                            for row in incidents.json()))
+        self.assertTrue(any(row["device"] == device and row["source_type"] == "DEMO"
+                            for row in alerts.json()))
+        self.assertTrue(any(row["device"] == device and row["source_type"] == "DEMO"
+                            for row in devices.json()))
 
     # 23. Demo Startup Processing Failure Is Reported
-    def test_23_demo_monitoring_start_failure_is_reported(self):
+    def test_24_demo_monitoring_start_failure_is_reported(self):
         original_mode = monitoring_service.monitoring_mode
         monitoring_service.pause_monitoring()
         monitoring_service.monitoring_mode = "demo"

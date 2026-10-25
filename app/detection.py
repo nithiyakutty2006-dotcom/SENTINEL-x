@@ -174,8 +174,8 @@ def process_event(event):
     ))
     conn.commit()
 
-    # 2. Update Device Baseline Profile (only for REAL events)
-    if source_type == "REAL":
+    # Keep real and demo sensor inventory separate; datasets are not live devices.
+    if source_type in {"REAL", "DEMO"}:
         update_baseline(event)
 
     # 3. Deduplicated Incident & Alert Triggering
