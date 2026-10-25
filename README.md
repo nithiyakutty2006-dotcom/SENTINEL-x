@@ -181,9 +181,15 @@ stored in SQLite rather than as standalone files. Without a persistent disk,
 these runtime changes can be lost on restarts, spin-downs, or redeploys.
 
 Scapy live packet capture depends on host interfaces and capture permissions
-that Render does not provide like a local machine. Real monitoring is intended
-for supported local hosts; use the existing dataset import and demo functions
-for hosted testing.
+that Render does not provide like a local machine. `SENTINEL_MONITORING_MODE`
+supports `auto`, `real`, and `demo`: `auto` (the default) selects explicitly
+labeled Demo Monitoring on Render and real Scapy capture on other hosts.
+Set `SENTINEL_MONITORING_MODE=demo` on other hosted platforms that do not permit
+packet capture. Demo Monitoring continuously creates synthetic events marked
+`DEMO`; it never represents them as live network traffic. Set
+`SENTINEL_MONITORING_MODE=real` only on a host with a supported interface and
+packet-capture permissions. A capture initialization failure is reported in
+the dashboard rather than shown as active monitoring.
 
 TensorFlow/Keras make this service substantially heavier than a static site.
 Check Render build and runtime logs and choose a compute plan with sufficient
@@ -213,7 +219,8 @@ instance until server-side authorization is implemented and verified.
 
 ## 🌐 Real-Time Monitoring & Demo Mode
 
-- **Real Monitoring**: Click **▶ START MONITOR** in the top toolbar. Scapy captures actual packets flowing through your host machine's network adapter, aggregates them into events according to the configured interval (default 1.5s), profiles the local device, and classifies risk.
+- **Real Monitoring**: Click **▶ START MONITOR** in the top toolbar on a supported host. Scapy captures actual packets flowing through the host network adapter and aggregates them according to the configured interval (default 1.5s).
+- **Demo Monitoring**: On Render, or when `SENTINEL_MONITORING_MODE=demo`, the same start button starts continuous synthetic events. The dashboard identifies this as **DEMO MONITORING**, and each event is tagged `DEMO`; it is not real network telemetry.
 - **Demo Mode**: Click **⚡ DEMO SIMULATION** to trigger high-volume synthetic threat scenarios for demonstrations without generating real network flood.
 
 ---

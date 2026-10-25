@@ -2,6 +2,8 @@ import unittest
 import os
 import json
 import secrets
+import time
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from main import app
 from app.database import get_db_connection, init_db
@@ -212,6 +214,95 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
 
         self.assertIsInstance(data_real["events"], int)
         self.assertIsInstance(data_demo["events"], int)
+
+    # 21. Monitoring Startup Failure Is Reported
+    def test_21_monitoring_capture_start_failure(self):
+        original_mode = monitoring_service.monitoring_mode
+        monitoring_service.pause_monitoring()
+        monitoring_service.monitoring_mode = "real"
+        try:
+            with patch("app.monitoring.sniff", side_effect=PermissionError("capture permission denied")):
+                response = client.post("/api/monitoring/start?username=admin&role=ADMIN")
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertFalse(data["success"])
+            self.assertIn("capture permission denied", data["message"])
+            self.assertEqual(data["status"]["mode"], "ERROR")
+            self.assertFalse(data["status"]["running"])
+        finally:
+            monitoring_service.pause_monitoring()
+            monitoring_service.monitoring_mode = original_mode
+
+    # 22. Demo Monitoring Emits Labeled Events and Stops
+    def test_22_demo_monitoring_start_and_stop(self):
+        original_mode = monitoring_service.monitoring_mode
+        monitoring_service.pause_monitoring()
+        monitoring_service.monitoring_mode = "demo"
+        try:
+            with patch(
+                "app.monitoring.get_setting",
+                side_effect=lambda key, default: "0.2" if key == "monitor_interval" else default
+            ), patch("app.monitoring.process_event", wraps=process_event) as process_event_mock:
+                started = client.post("/api/monitoring/start?username=admin&role=ADMIN")
+                self.assertEqual(started.status_code, 200)
+                self.assertTrue(started.json()["success"])
+                self.assertEqual(started.json()["status"]["mode"], "DEMO MONITORING")
+                self.assertIn("not real network traffic", started.json()["message"])
+                status = client.get("/api/monitoring/status")
+                self.assertEqual(status.status_code, 200)
+                self.assertEqual(status.json()["mode"], "DEMO MONITORING")
+                self.assertTrue(status.json()["running"])
+
+                deadline = time.monotonic() + 3
+                row = None
+                while time.monotonic() < deadline:
+                    conn = get_db_connection()
+                    try:
+                        row = conn.execute(
+                            "SELECT source_type FROM events WHERE device='DEMO-SENSOR-01' ORDER BY id DESC LIMIT 1"
+                        ).fetchone()
+                    finally:
+                        conn.close()
+                    if row:
+                        break
+                    time.sleep(0.05)
+
+                self.assertIsNotNone(row)
+                self.assertEqual(row["source_type"], "DEMO")
+                stopped = client.post("/api/monitoring/stop?username=admin&role=ADMIN")
+                self.assertEqual(stopped.status_code, 200)
+                self.assertTrue(stopped.json()["success"])
+                self.assertFalse(stopped.json()["status"]["running"])
+                self.assertEqual(stopped.json()["status"]["mode"], "IDLE")
+                calls_at_pause = process_event_mock.call_count
+                time.sleep(0.3)
+                self.assertEqual(process_event_mock.call_count, calls_at_pause)
+        finally:
+            monitoring_service.pause_monitoring()
+            monitoring_service.monitoring_mode = original_mode
+
+    # 23. Demo Startup Processing Failure Is Reported
+    def test_23_demo_monitoring_start_failure_is_reported(self):
+        original_mode = monitoring_service.monitoring_mode
+        monitoring_service.pause_monitoring()
+        monitoring_service.monitoring_mode = "demo"
+        try:
+            with patch(
+                "app.monitoring.process_event",
+                side_effect=RuntimeError("demo event processing failed")
+            ):
+                response = client.post("/api/monitoring/start?username=admin&role=ADMIN")
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertFalse(data["success"])
+            self.assertIn("demo event processing failed", data["message"])
+            self.assertEqual(data["status"]["mode"], "ERROR")
+            self.assertFalse(data["status"]["running"])
+        finally:
+            monitoring_service.pause_monitoring()
+            monitoring_service.monitoring_mode = original_mode
 
 if __name__ == '__main__':
     unittest.main()

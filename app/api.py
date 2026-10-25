@@ -307,7 +307,12 @@ def start_monitoring(username: str = Query("admin"), role: str = Query("ADMIN"))
         raise HTTPException(status_code=403, detail="Permission denied. Read-only viewer role.")
 
     success, msg = monitoring_service.start_monitoring(username=username)
-    return {"success": success, "message": msg}
+    status = monitoring_service.get_status()
+    return {
+        "success": success,
+        "message": msg,
+        "status": status
+    }
 
 @router.post("/monitoring/pause")
 @router.post("/monitoring/stop")
@@ -316,7 +321,11 @@ def pause_monitoring(username: str = Query("admin"), role: str = Query("ADMIN"))
         raise HTTPException(status_code=403, detail="Permission denied. Read-only viewer role.")
 
     success, msg = monitoring_service.pause_monitoring(username=username)
-    return {"success": success, "message": msg}
+    return {
+        "success": success,
+        "message": msg,
+        "status": monitoring_service.get_status()
+    }
 
 @router.post("/monitoring/simulate")
 def trigger_simulation(req: SimulationRequest, username: str = Query("admin"), role: str = Query("ADMIN")):

@@ -8,6 +8,29 @@ let riskChartInstance = null;
 let severityChartInstance = null;
 let protocolChartInstance = null;
 
+async function readApiResponse(response) {
+    let data;
+    try {
+        data = await response.json();
+    } catch {
+        data = {};
+    }
+    if (!response.ok) {
+        throw new Error(data.detail || data.message || `Request failed (${response.status})`);
+    }
+    return data;
+}
+
+function showMonitoringError(message) {
+    const status = document.getElementById('badgeStatus');
+    if (status) {
+        status.innerText = '● ERROR';
+        status.style.color = 'var(--red)';
+        status.title = message;
+    }
+    alert(`Monitoring error: ${message}`);
+}
+
 // Tab Subtitles Map
 const tabTitles = {
     dashboard: { title: "SECURITY COMMAND CENTER", sub: "Real-time network traffic telemetry and Deep Learning anomaly detection" },
@@ -235,11 +258,16 @@ function fetchRiskHistoryChart() {
 // Telemetry & Dashboard Stats
 function fetchDashboardStats() {
     fetch('/api/dashboard/stats')
-        .then(res => res.json())
+        .then(readApiResponse)
         .then(data => {
             // Badges
-            document.getElementById('badgeStatus').innerText = data.running ? "● MONITORING" : "● SYSTEM READY";
-            document.getElementById('badgeStatus').style.color = data.running ? "var(--green)" : "var(--muted)";
+            const statusBadge = document.getElementById('badgeStatus');
+            const hasError = data.status === 'ERROR';
+            const isDemo = data.status === 'DEMO MONITORING';
+            const isStartingDemo = data.status === 'STARTING DEMO';
+            statusBadge.innerText = hasError ? "● ERROR" : isStartingDemo ? "● STARTING DEMO" : isDemo && data.running ? "● DEMO MONITORING" : data.running ? "● MONITORING" : "● SYSTEM READY";
+            statusBadge.style.color = hasError ? "var(--red)" : isStartingDemo ? "var(--yellow)" : data.running ? "var(--green)" : "var(--muted)";
+            statusBadge.title = data.last_error || '';
             document.getElementById('badgeMode').innerText = `MODE: ${data.status}`;
             document.getElementById('badgePackets').innerText = `PACKETS: ${data.packets_captured}`;
             if (document.getElementById('badgeLastPacket')) {
@@ -314,6 +342,14 @@ function fetchDashboardStats() {
                 `;
                 tbody.appendChild(tr);
             });
+        })
+        .catch(err => {
+            const statusBadge = document.getElementById('badgeStatus');
+            if (statusBadge) {
+                statusBadge.innerText = '● STATUS UNAVAILABLE';
+                statusBadge.style.color = 'var(--red)';
+                statusBadge.title = err.message;
+            }
         });
 }
 
@@ -645,18 +681,26 @@ function handleDatasetImport(event) {
 function startMonitoring() {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
     fetch(`/api/monitoring/start?username=${currentUser}&role=${currentRole}`, { method: 'POST' })
-        .then(res => res.json())
+        .then(readApiResponse)
         .then(data => {
-            if (!data.success && data.message) alert(data.message);
+            if (!data.success) {
+                showMonitoringError(data.message || 'The monitoring service did not start.');
+                return;
+            }
             fetchDashboardStats();
-        });
+        })
+        .catch(err => showMonitoringError(err.message));
 }
 
 function pauseMonitoring() {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
     fetch(`/api/monitoring/pause?username=${currentUser}&role=${currentRole}`, { method: 'POST' })
-        .then(res => res.json())
-        .then(data => fetchDashboardStats());
+        .then(readApiResponse)
+        .then(data => {
+            if (!data.success) throw new Error(data.message || 'The monitoring service did not stop.');
+            fetchDashboardStats();
+        })
+        .catch(err => showMonitoringError(err.message));
 }
 
 function triggerSimulation() {
@@ -666,8 +710,9 @@ function triggerSimulation() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario: 'Critical Event' })
     })
-    .then(res => res.json())
-    .then(data => fetchDashboardStats());
+    .then(readApiResponse)
+    .then(data => fetchDashboardStats())
+    .catch(err => showMonitoringError(err.message));
 }
 
 function exportPDF() {
