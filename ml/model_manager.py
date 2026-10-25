@@ -14,10 +14,14 @@ class ModelManager:
     def reload_model(self):
         conn = get_db_connection()
         row = conn.execute("SELECT threshold FROM model_metrics ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
         if row:
             return self.inference.load(threshold=row["threshold"])
-        else:
-            return self.inference.load(threshold=0.5)
+        self.inference.loaded = False
+        self.inference.model = None
+        self.inference.threshold = None
+        self.inference.load_error = None
+        return False
 
     def get_status(self):
         conn = get_db_connection()
@@ -33,6 +37,28 @@ class ModelManager:
                 "threshold": row["threshold"],
                 "status": "READY"
             }
+        if self.inference.load_error:
+            return {
+                "trained": False,
+                "loaded": False,
+                "date": None,
+                "samples": 0,
+                "loss": None,
+                "val_loss": None,
+                "threshold": None,
+                "status": "INVALID ARTIFACT"
+            }
+        if row:
+            return {
+                "trained": False,
+                "loaded": False,
+                "date": row["training_date"],
+                "samples": row["samples"],
+                "loss": row["loss"],
+                "val_loss": row["val_loss"],
+                "threshold": None,
+                "status": "MODEL ARTIFACTS UNAVAILABLE"
+            }
         return {
             "trained": False,
             "loaded": False,
@@ -40,25 +66,32 @@ class ModelManager:
             "samples": 0,
             "loss": None,
             "val_loss": None,
-            "threshold": 0.5,
+            "threshold": None,
             "status": "NOT TRAINED"
         }
 
     def train_on_history(self):
         conn = get_db_connection()
-        rows = conn.execute("SELECT * FROM events WHERE severity IN ('LOW', 'NORMAL', 'MEDIUM') LIMIT 2000").fetchall()
-        if len(rows) < 10:
-            rows = conn.execute("SELECT * FROM events LIMIT 2000").fetchall()
+        rows = conn.execute("""
+            SELECT * FROM events
+            WHERE source_type IN ('LIVE', 'REAL')
+              AND severity IN ('LOW', 'NORMAL', 'MEDIUM')
+            ORDER BY id DESC LIMIT 2000
+        """).fetchall()
 
         if len(rows) < 10:
-            return False, "Not enough historical data to train (Need at least 10 network events). Run monitoring or Demo simulation to collect events."
+            return False, (
+                "Not enough labeled-source baseline telemetry to train. At least 10 "
+                "LOW, NORMAL, or MEDIUM LIVE/REAL events are required; DEMO and "
+                "DATASET events are not used as live training data."
+            )
 
         data = []
         for r in rows:
             data.append(self.inference.extract_features(dict(r)))
 
         try:
-            metrics = train_model(data)
+            metrics = train_model(data, feature_names=self.inference.FEATURE_NAMES)
 
             # Insert into metrics
             conn.execute("""
@@ -92,7 +125,8 @@ class ModelManager:
             conn.commit()
 
             # Reload model in inference engine
-            self.inference.load(threshold=metrics["threshold"])
+            if not self.inference.load(threshold=metrics["threshold"]):
+                raise RuntimeError("The trained model artifacts failed schema or load validation.")
 
             return True, f"Autoencoder model trained on {metrics['samples']} samples. Loss: {metrics['loss']:.4f}, Threshold: {metrics['threshold']:.4f}"
         except Exception as e:
@@ -103,9 +137,13 @@ class ModelManager:
             return False, "Model is not loaded or trained yet."
 
         conn = get_db_connection()
-        rows = conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 500").fetchall()
+        rows = conn.execute("""
+            SELECT * FROM events
+            WHERE source_type IN ('LIVE', 'REAL')
+            ORDER BY id DESC LIMIT 500
+        """).fetchall()
         if len(rows) < 5:
-            return False, "Not enough evaluation data in SQLite."
+            return False, "At least five LIVE/REAL events are required for unsupervised score-distribution evaluation."
 
         data = [self.inference.extract_features(dict(r)) for r in rows]
         
@@ -123,12 +161,12 @@ class ModelManager:
             """, (
                 now_string(),
                 "v2.0-Autoencoder",
-                100.0 - res["anomaly_rate_percent"],
-                95.5,
-                94.0,
-                94.7,
+                None,
+                None,
+                None,
+                None,
                 res["avg_mse_loss"],
-                "COMPLETED"
+                "UNSUPERVISED_ONLY_NO_GROUND_TRUTH"
             ))
             conn.commit()
 

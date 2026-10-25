@@ -42,6 +42,10 @@ function showTableError(tableBodyId, columnCount, error) {
     tbody.replaceChildren(row);
 }
 
+function displaySource(sourceType) {
+    return sourceType === 'REAL' ? 'LIVE (LOCAL LEGACY)' : sourceType || 'UNKNOWN';
+}
+
 // Tab Subtitles Map
 const tabTitles = {
     dashboard: { title: "SECURITY COMMAND CENTER", sub: "Real-time network traffic telemetry and Deep Learning anomaly detection" },
@@ -280,11 +284,23 @@ function fetchDashboardStats() {
             statusBadge.innerText = hasError ? "● ERROR" : isStartingDemo ? "● STARTING DEMO" : isDemo && data.running ? "● DEMO MONITORING" : data.running ? "● MONITORING" : "● SYSTEM READY";
             statusBadge.style.color = hasError ? "var(--red)" : isStartingDemo ? "var(--yellow)" : data.running ? "var(--green)" : "var(--muted)";
             statusBadge.title = data.last_error || '';
-            document.getElementById('badgeMode').innerText = `MODE: ${data.status}`;
+            document.getElementById('badgeMode').innerText = `ENGINE: ${data.status}`;
+            const sourceTypes = (data.source_types || []).map(displaySource);
+            document.getElementById('badgeDataSource').innerText =
+                `DATA SOURCES: ${sourceTypes.length ? sourceTypes.join(' + ') : 'NONE'}`;
+            const sensorBadge = document.getElementById('badgeSensor');
+            const sensor = data.sensor || {};
+            sensorBadge.innerText = `SENSOR: ${sensor.status || 'UNKNOWN'}`;
+            sensorBadge.style.color = sensor.online ? 'var(--green)' : 'var(--yellow)';
+            sensorBadge.title = sensor.last_heartbeat
+                ? `Last authenticated heartbeat: ${sensor.last_heartbeat}`
+                : 'No authenticated sensor heartbeat has been received.';
+            document.getElementById('badgeLastEventTime').innerText =
+                `LAST EVENT: ${sensor.last_event || data.last_event_time || 'NONE'}`;
             document.getElementById('badgePackets').innerText = `PACKETS: ${data.packets_captured}`;
             if (document.getElementById('badgeLastPacket')) {
                 if (data.last_packet_time) {
-                    const timeOnly = data.last_packet_time.split(" ")[-1] || data.last_packet_time;
+                    const timeOnly = data.last_packet_time.split(" ").pop() || data.last_packet_time;
                     document.getElementById('badgeLastPacket').innerText = `LAST PKT: ${timeOnly}`;
                     document.getElementById('badgeLastPacket').style.color = "var(--green)";
                 } else {
@@ -325,14 +341,14 @@ function fetchDashboardStats() {
                 mlEl.innerText = `READY (Loss: ${data.ml_status.loss.toFixed(4)})`;
                 mlEl.style.color = 'var(--green)';
             } else {
-                mlEl.innerText = 'NOT TRAINED';
+                mlEl.innerText = data.ml_status.status || 'NOT TRAINED';
                 mlEl.style.color = 'var(--yellow)';
             }
 
             // Threat Feed Table
             const tbody = document.getElementById('threatFeedBody');
             if (data.recent_events.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted);">Waiting for network telemetry... Start Real Monitoring or run Demo Simulation.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted);">No persisted telemetry yet. Configure a local sensor or explicitly start Demo Monitoring.</td></tr>`;
                 return;
             }
 
@@ -342,14 +358,14 @@ function fetchDashboardStats() {
                 const srcBadge = ev.source_type === 'REAL' ? 'badge-status' : 'badge-mode';
                 tr.innerHTML = `
                     <td>${ev.timestamp}</td>
-                    <td><span class="badge ${srcBadge}">${ev.source_type || 'REAL'}</span></td>
+                    <td><span class="badge ${srcBadge}">${displaySource(ev.source_type || 'REAL')}</span></td>
                     <td><b>${ev.device}</b></td>
-                    <td>${ev.source_ip}:${ev.port}</td>
-                    <td>${ev.destination_ip}</td>
+                    <td>${ev.source_ip}:${ev.source_port || 0}</td>
+                    <td>${ev.destination_ip}:${ev.destination_port ?? ev.port ?? 0}</td>
                     <td><span class="badge">${ev.protocol}</span></td>
                     <td><b>${ev.risk}%</b></td>
                     <td class="sev-${ev.severity}">${ev.severity}</td>
-                    <td>${ev.ai_score ? ev.ai_score.toFixed(1) + '%' : '0.0%'}</td>
+                    <td>${Number.isFinite(ev.ai_score) ? ev.ai_score.toFixed(1) + ' (not confidence)' : 'N/A'}</td>
                     <td style="font-size: 12px;">${ev.factors}</td>
                 `;
                 tbody.appendChild(tr);
@@ -384,23 +400,25 @@ function fetchEvents() {
                 tr.innerHTML = `
                     <td>#${ev.id}</td>
                     <td>${ev.timestamp}</td>
-                    <td><span class="badge">${ev.source_type || 'REAL'}</span></td>
+                    <td><span class="badge">${displaySource(ev.source_type || 'REAL')}</span></td>
                     <td>${ev.device}</td>
                     <td>${ev.source_ip}</td>
                     <td>${ev.destination_ip}</td>
-                    <td>${ev.port}</td>
+                    <td>${ev.source_port || 0}</td>
+                    <td>${ev.destination_port ?? ev.port ?? 0}</td>
                     <td>${ev.protocol}</td>
                     <td>${ev.packets}</td>
+                    <td>${ev.bytes ?? 'N/A'}</td>
                     <td>${ev.traffic} MB</td>
                     <td><b>${ev.risk}%</b></td>
                     <td class="sev-${ev.severity}">${ev.severity}</td>
-                    <td>${ev.ai_score ? ev.ai_score.toFixed(1) + '%' : '0.0%'}</td>
+                    <td>${Number.isFinite(ev.ai_score) ? ev.ai_score.toFixed(1) + ' (not confidence)' : 'N/A'}</td>
                     <td><button class="btn btn-outline" style="padding: 3px 8px; font-size: 11px;" onclick="showEventDetail(${ev.id})">Details</button></td>
                 `;
                 tbody.appendChild(tr);
             });
         })
-        .catch(err => showTableError('eventsTableBody', 14, err));
+        .catch(err => showTableError('eventsTableBody', 16, err));
 }
 
 function showEventDetail(id) {
@@ -413,14 +431,15 @@ function showEventDetail(id) {
                 <b>Timestamp:</b> ${ev.timestamp}<br>
                 <b>Source Type:</b> ${ev.source_type}<br>
                 <b>Device:</b> ${ev.device}<br>
-                <b>Source IP:</b> ${ev.source_ip}:${ev.port}<br>
-                <b>Destination IP:</b> ${ev.destination_ip}<br>
+                <b>Source:</b> ${ev.source_ip}:${ev.source_port || 0}<br>
+                <b>Destination:</b> ${ev.destination_ip}:${ev.destination_port ?? ev.port ?? 0}<br>
                 <b>Protocol:</b> ${ev.protocol}<br>
-                <b>Packets Count:</b> ${ev.packets} | <b>Traffic:</b> ${ev.traffic} MB<br>
+                <b>Packets:</b> ${ev.packets} | <b>Bytes:</b> ${ev.bytes ?? 'N/A'} | <b>Traffic:</b> ${ev.traffic} MB<br>
                 <b>Rule Risk Score:</b> ${ev.rule_score || 0}%<br>
                 <b>Baseline Anomaly Score:</b> ${ev.baseline_score || 0}%<br>
-                <b>Deep Learning AI Score:</b> ${ev.ai_score ? ev.ai_score.toFixed(1) : 0}%<br>
-                <b>Combined Risk Score:</b> <b style="color: var(--red);">${ev.risk}% (${ev.severity})</b><br><br>
+                <b>Model Anomaly Score (not confidence):</b> ${Number.isFinite(ev.ai_score) ? ev.ai_score.toFixed(1) : 'N/A'}<br>
+                <b>Rule-based risk level:</b> <b style="color: var(--red);">${ev.risk}% (${ev.severity})</b><br>
+                <b>Interpretation:</b> This indicates suspicious telemetry for analyst review; it does not confirm malicious activity.<br><br>
                 <b>Explainable AI Rationale:</b><br>
                 <div style="background: #0B1321; padding: 10px; border-radius: 4px; border: 1px solid var(--border-color); margin-top: 5px;">
                     ${ev.factors}
@@ -448,7 +467,7 @@ function fetchIncidents() {
                 tr.innerHTML = `
                     <td>#${inc.id}</td>
                     <td>${inc.timestamp}</td>
-                    <td><span class="badge">${inc.source_type || 'REAL'}</span></td>
+                    <td><span class="badge">${displaySource(inc.source_type || 'REAL')}</span></td>
                     <td><b>${inc.device}</b></td>
                     <td>${inc.risk}%</td>
                     <td class="sev-${inc.severity}">${inc.severity}</td>
@@ -487,7 +506,7 @@ function fetchDevices() {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td><b>${d.device}</b></td>
-                    <td><span class="badge">${d.source_type || 'REAL'}</span></td>
+                    <td><span class="badge">${displaySource(d.source_type || 'REAL')}</span></td>
                     <td>${d.avg_packets.toFixed(1)}</td>
                     <td>${d.avg_traffic.toFixed(3)} MB</td>
                     <td>${d.avg_connections.toFixed(1)}</td>
@@ -515,7 +534,7 @@ function fetchAlerts() {
                 tr.innerHTML = `
                     <td>#${a.id}</td>
                     <td>${a.timestamp}</td>
-                    <td><span class="badge">${a.source_type || 'REAL'}</span></td>
+                    <td><span class="badge">${displaySource(a.source_type || 'REAL')}</span></td>
                     <td><b>${a.device}</b></td>
                     <td>${a.risk}%</td>
                     <td class="sev-${a.severity}">${a.severity}</td>
@@ -607,7 +626,7 @@ function loadSettings() {
                     `;
                 } else {
                     detail.innerHTML = `
-                        <b>Status:</b> <b style="color: var(--yellow);">NOT TRAINED</b><br>
+                        <b>Status:</b> <b style="color: var(--yellow);">${m.status || 'NOT TRAINED'}</b><br>
                         <b>Notice:</b> Machine learning autoencoder requires historical baseline data.<br>
                         Click the button below to train on collected events or import a dataset CSV.
                     `;

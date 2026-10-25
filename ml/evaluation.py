@@ -28,5 +28,5 @@ def evaluate_model_performance(model, scaler, data, threshold):
         "threshold_used": round(threshold, 6),
         "anomalies_flagged": anomalies_detected,
         "anomaly_rate_percent": round(anomaly_rate, 2),
-        "status": "EVALUATED"
+        "status": "UNSUPERVISED_DISTRIBUTION_ONLY"
     }

@@ -4,8 +4,8 @@ from datetime import datetime
 
 model_manager = ModelManager()
 
-def update_baseline(event):
-    conn = get_db_connection()
+def update_baseline(event, connection=None):
+    conn = connection or get_db_connection()
     device = event["device"]
     packets = event["packets"]
     traffic = event["traffic"]
@@ -33,7 +33,9 @@ def update_baseline(event):
             SET avg_packets=?, avg_traffic=?, avg_connections=?, samples=?, last_seen=?
             WHERE device=?
         """, (avg_packets, avg_traffic, avg_connections, samples, now_string(), device))
-    conn.commit()
+    if connection is None:
+        conn.commit()
+        conn.close()
 
 def detect_anomaly(event):
     conn = get_db_connection()
@@ -65,6 +67,7 @@ def detect_anomaly(event):
         FROM device_baseline
         WHERE device=?
     """, (device,)).fetchone()
+    conn.close()
 
     if row and row["samples"] >= 3:
         pkt_ratio = event["packets"] / max(row["avg_packets"], 1.0)
@@ -85,7 +88,8 @@ def detect_anomaly(event):
             factors.append(f"[Baseline] Concurrent Connection Spike ({conn_ratio:.1f}x baseline)")
 
     # 3. Deep Learning Autoencoder Anomaly Score
-    ai_score = 0.0
+    ai_score = None
+    ai_risk_score = 0.0
     model_status_text = "NOT TRAINED"
     ml_enabled = get_setting("ml_enabled", "1") == "1"
     
@@ -93,7 +97,8 @@ def detect_anomaly(event):
         model_status_text = "READY"
         dl_score, is_anomaly, mse = model_manager.inference.predict(event)
         ai_score = dl_score
-        if is_anomaly or dl_score > 30.0:
+        ai_risk_score = dl_score if dl_score is not None else 0.0
+        if dl_score is not None and (is_anomaly or dl_score > 30.0):
             factors.append(f"[Deep Learning Autoencoder] Anomaly Detected (Score: {dl_score:.1f}%, MSE: {mse:.4f})")
     elif not ml_enabled:
         model_status_text = "DISABLED"
@@ -105,7 +110,7 @@ def detect_anomaly(event):
         factors.append("[Simulation] Synthetic Critical Threat Triggered")
 
     # Combine Scores (0-100 scale)
-    weighted_score = (rule_score * 0.4) + (baseline_score * 0.3) + (ai_score * 0.3)
+    weighted_score = (rule_score * 0.4) + (baseline_score * 0.3) + (ai_risk_score * 0.3)
     combined_risk = int(min(100.0, max(rule_score * 0.8, baseline_score * 0.8, weighted_score)))
 
     critical_threshold = int(get_setting("critical_threshold", "80"))
@@ -130,7 +135,7 @@ def detect_anomaly(event):
     return {
         "rule_score": round(rule_score, 1),
         "baseline_score": round(baseline_score, 1),
-        "ai_score": round(ai_score, 1),
+        "ai_score": round(ai_score, 1) if ai_score is not None else None,
         "combined_risk": combined_risk,
         "severity": severity,
         "factors": factors,
@@ -163,28 +168,31 @@ def process_event(event):
     INSERT INTO events(
         timestamp, device, source_ip, destination_ip, port, protocol,
         packets, traffic, connections, unknown, risk, severity, ai_score,
-        rule_score, baseline_score, factors, source_type
+        rule_score, baseline_score, factors, source_type, source_port, bytes,
+        flow_id, sensor_id, event_id
     )
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         event["timestamp"], event["device"], event["source_ip"], event["destination_ip"],
         event["port"], event["protocol"], event["packets"], event["traffic"],
         event["connections"], event["unknown"], risk, severity, ai_score,
-        rule_score, baseline_score, ", ".join(factors), source_type
+        rule_score, baseline_score, ", ".join(factors), source_type,
+        event.get("source_port", 0), event.get("bytes", int(event.get("traffic", 0) * 1024 * 1024)),
+        event.get("flow_id"), event.get("sensor_id"), event.get("event_id")
     ))
-    conn.commit()
 
-    # Keep real and demo sensor inventory separate; datasets are not live devices.
-    if source_type in {"REAL", "DEMO"}:
-        update_baseline(event)
+    # Keep real, live-sensor, and demo inventory separate from imported datasets.
+    if source_type in {"REAL", "LIVE", "DEMO"}:
+        update_baseline(event, conn)
 
     # 3. Deduplicated Incident & Alert Triggering
     if risk >= 60:
         # Check if an open incident exists for this device in the last 15 seconds to prevent flood
         recent_incident = conn.execute("""
             SELECT id FROM incidents
-            WHERE device=? AND status != 'RESOLVED' AND timestamp > datetime('now', '-15 seconds')
-        """, (event["device"],)).fetchone()
+            WHERE device=? AND status != 'RESOLVED'
+              AND datetime(timestamp) > datetime(?, '-15 seconds')
+        """, (event["device"], event["timestamp"])).fetchone()
 
         if not recent_incident:
             conn.execute("""
@@ -192,7 +200,8 @@ def process_event(event):
             VALUES(?,?,?,?,?,?,?)
             """, (
                 event["timestamp"], event["device"], risk, severity, "OPEN",
-                f"Automated SOC Alert: {severity} threat on {event['device']} ({', '.join(factors)})",
+                f"Suspicious activity requiring analyst verification on {event['device']} "
+                f"({', '.join(factors)}). This is not a confirmed malicious event.",
                 source_type
             ))
             
@@ -202,6 +211,7 @@ def process_event(event):
             """, (
                 event["timestamp"], event["device"], risk, severity, "SOC DASHBOARD & EMAIL", "TRIGGERED", source_type
             ))
-            conn.commit()
+    conn.commit()
+    conn.close()
 
     return event

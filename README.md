@@ -1,6 +1,6 @@
 # SENTINEL-X 2.0 — AI-Based Network Security Monitoring and Deep Learning Anomaly Detection System
 
-**SENTINEL-X 2.0** is an enterprise-grade, browser-based Security Operations Center (SOC) platform for real-time network traffic telemetry monitoring, hybrid risk scoring, and unsupervised Deep Learning Autoencoder anomaly detection.
+**SENTINEL-X 2.0** is a browser-based Security Operations Center (SOC) application for network-flow telemetry, explainable rule/baseline risk scoring, and optional unsupervised anomaly scoring. It is a monitoring prototype, not a validated attack-detection product.
 
 ---
 
@@ -26,14 +26,13 @@
    - **Help & System Status**: Live platform diagnostics, network interface diagnostics, and operator guide.
    - **Logout**: Secure session termination.
 
-3. **Real Network Monitoring (`Scapy`)**:
-   - Captures actual live network packets on the host network interfaces.
-   - Extracts source IP, destination IP, protocol, destination port, packet count, and traffic volume.
-   - Dynamically respects configured accumulation intervals.
-   - Transparent error logging (e.g. Npcap requirements on Windows) with explicit active/idle indicators.
+3. **Opt-in Windows Network Sensor (`Scapy` / Npcap)**:
+   - A separate command-line sensor can aggregate selected-interface IPv4/IPv6 TCP/UDP flow metadata and send it to the backend over HTTPS.
+   - It starts only after an explicit `--run --interface ...` command; it is not auto-started by the website.
+   - See the Windows sensor section below for Npcap, administrator permissions, and capture limitations.
 
 4. **Strict Separation of Real Monitoring & Demo Simulation**:
-   - Real network packets are tagged as `source_type = "REAL"`.
+   - Legacy host-captured packets are tagged as `source_type = "REAL"`; authenticated local sensor telemetry is tagged as `source_type = "LIVE"`.
    - Synthetic test scenarios are tagged as `source_type = "DEMO"`.
    - Offline imported captures are tagged as `source_type = "DATASET"`.
 
@@ -219,38 +218,101 @@ instance until server-side authorization is implemented and verified.
 
 ## 🧠 Deep Learning Workflow
 
-1. **Collect Baseline Telemetry**: Start real monitoring or run Demo Simulation to collect at least 10–20 normal network events in the SQLite database (or upload an offline CSV via the **Model Mgmt** or **Datasets** tab).
+1. **Collect Baseline Telemetry**: The current training path uses only LIVE/legacy REAL events labeled LOW, NORMAL, or MEDIUM. DEMO and DATASET events are excluded.
 2. **Train Model**:
    - Navigate to the **Model Mgmt** tab in the web interface.
    - Click **🧠 TRAIN AUTOENCODER**.
-   - The backend trains a 6-feature Autoencoder, saves `models/autoencoder.keras`, and computes the 95th-percentile dynamic anomaly threshold.
+   - The backend trains a 6-feature Autoencoder and saves its model plus a scaler tagged with the exact feature order/schema. A model or scaler that does not match the current schema is rejected.
 3. **Evaluate Model**:
-   - Click **📈 EVALUATE MODEL** to test reconstruction errors across historical events.
+   - Click **📈 EVALUATE MODEL** to review unsupervised reconstruction-error distribution on LIVE/REAL events. No supervised accuracy metrics are available without labeled ground truth.
 4. **Live Inference**:
-   - Every incoming network event is automatically evaluated by `ModelInference.predict()`, contributing its AI anomaly score to the overall risk calculation.
+   - A model score contributes to risk only when compatible trained artifacts are loaded. Otherwise status is NOT TRAINED or INVALID ARTIFACT and the score is N/A.
 
 ---
 
 ## 🌐 Real-Time Monitoring & Demo Mode
 
-- **Real Monitoring**: Click **▶ START MONITOR** in the top toolbar on a supported host. Scapy captures actual packets flowing through the host network adapter and aggregates them according to the configured interval (default 1.5s).
+- **Legacy host monitoring**: The existing **▶ START MONITOR** can capture on the application host when configured for real capture and supported by its OS/permissions. Render is explicitly configured for Demo mode and does not sniff Render or your home network.
 - **Demo Monitoring**: On Render, or when `SENTINEL_MONITORING_MODE=demo`, the same start button starts continuous synthetic events. The dashboard identifies this as **DEMO MONITORING**, and each event is tagged `DEMO`; it is not real network telemetry.
 - Demo events use the separate `DEMO-SENSOR-01` inventory entry. Every fifth event is an explicitly simulated high-risk example so the configured detection rules can demonstrate incident and alert creation; those pages remain empty until an event meets the risk trigger.
 - **Demo Mode**: Click **⚡ DEMO SIMULATION** to trigger high-volume synthetic threat scenarios for demonstrations without generating real network flood.
+
+## 🪟 Opt-in Windows Sensor for LIVE Telemetry
+
+The sensor runs on the Windows PC and sends flow metadata to the configured SENTINEL-X backend. Render only receives telemetry; it does not capture packets from Render or your LAN. The single configured sensor identity is set on the backend with `SENTINEL_SENSOR_ID` and `SENTINEL_SENSOR_SECRET`. Set the exact same values locally in the sensor terminal. Use a unique sensor ID (letters, digits, `.`, `_`, or `-`) and a randomly generated secret of at least 32 characters. Keep the secret only in Render's private Environment settings and the local process environment; never put it in source, `.env` committed to Git, browser JavaScript, or chat.
+
+### Install and configure
+
+1. Install Python dependencies from the project folder:
+
+   ```powershell
+   python -m pip install -r requirements.txt
+   ```
+
+2. Install **Npcap** from [npcap.com](https://npcap.com/). Select the option to enable WinPcap API-compatible mode if the installer offers it. Restart the terminal after installation.
+3. In the Render service's **Environment** settings, add `SENTINEL_SENSOR_ID` and `SENTINEL_SENSOR_SECRET`. Generate a secret locally (do not share it):
+
+   ```powershell
+   python -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
+
+   Copy the generated value directly into Render's private Environment UI and your local PowerShell environment. Do not put the value in `render.yaml`.
+4. Open **VS Code as Administrator** so Npcap access has the required permissions. In its PowerShell terminal, set the same identity and secret and the public URL:
+
+   ```powershell
+   $env:SENTINEL_SENSOR_ID = "your-configured-sensor-id"
+   $env:SENTINEL_SENSOR_SECRET = "the-secret-you-generated-locally"
+   $env:SENTINEL_SENSOR_URL = "https://sentinel-x-72rs.onrender.com"
+   ```
+
+   These are placeholders: replace them locally with the values configured in Render. The environment applies only to processes started from this terminal.
+5. Start the web application separately if running it locally. For sensor-only local validation, the deployed Render site can receive telemetry:
+
+   ```powershell
+   python -m sensor.windows_sensor --check
+   ```
+
+   This checks Windows, Npcap visibility, administrator access, HTTPS reachability, and matching server sensor identity; it does **not** start packet capture. If any check fails, resolve the displayed issue before proceeding.
+6. Review the listed Npcap interface names and explicitly start capture on the exact interface you intend to monitor:
+
+   ```powershell
+   python -m sensor.windows_sensor --run --interface "\Device\NPF_{INTERFACE-GUID}"
+   ```
+
+   Replace the example with an exact interface printed by `--check`. Press **Ctrl+C** to stop. Nothing starts capture automatically. The sensor sends a signed heartbeat every 30 seconds and batches flow metadata about every 10 seconds.    Public health status is available at `/api/sensors/health`; verify it from PowerShell with:
+
+   ```powershell
+   Invoke-RestMethod "https://sentinel-x-72rs.onrender.com/api/sensors/health" | Format-List
+   ```
+
+   Confirm `configured` and `online` are `True` while the sensor is running. The dashboard also shows sensor status and last event time.
+
+### Collection and security boundaries
+
+- The sensor aggregates timestamps, IP addresses, ports, protocol, observed packet/byte counts, and a 5-tuple flow identifier. It does not intentionally parse, persist, or transmit packet payload contents. Telemetry is validated and tagged `LIVE` by the backend; clients cannot choose `DEMO`/`LIVE` source labels.
+- **Important packet-capture limitation:** Npcap/Scapy delivers a bounded 128-byte packet prefix to the local Python process so Scapy can decode network and transport headers. The sensor does not retain or upload that prefix, but payload bytes may transiently be present in process memory. Therefore this is not a strict zero-payload capture boundary and cannot guarantee that a credential never appears in that transient prefix. For environments requiring strict payload exclusion, do not run this sensor; use a trusted NetFlow/IPFIX or equivalent metadata-only exporter and an appropriately reviewed adapter.
+- Requests use HTTPS and HMAC-SHA256 signatures over the timestamp, one-time nonce, and exact request body. The backend rejects expired/replayed requests, enforces a request-rate limit, and validates every telemetry field. The sensor's retry queue is memory-only; unsent events are lost when the process exits or its bounded queue overflows.
+- Sensor HMAC protects telemetry writes, but it does not protect the existing dashboard/read APIs. The public deployment warning below still applies: do not send sensitive or production telemetry to the public Render site until server-side user authorization also protects access to stored telemetry.
+- This sensor observes only traffic visible to the selected PC interface. Whole-LAN visibility requires a gateway/router sensor or a managed switch configured with a SPAN/mirror port feeding a dedicated sensor interface. Do not enable port mirroring without network-owner authorization.
+- LIVE telemetry means observed metadata, not proof of malicious activity. Rules and baselines produce suspicion signals for analyst review, not confirmed attacks. Incidents/alerts are not ground-truth labels.
+
+### Model status and evaluation
+
+The inference feature order is `packets`, traffic in MB, connections, unknown-destination count, destination port, and protocol code; training, scaling, and inference use the same six-feature order and the existing min/max `FeatureScaler`. Runtime model/scaler artifacts are not present in the repository, so a fresh installation reports **NOT TRAINED** and provides no model score. Dataset and DEMO events are excluded from live-history training and evaluation. The displayed autoencoder score is an anomaly score, not a probability or confidence. Evaluation reports reconstruction-error distribution only; it does not report accuracy, precision, recall, or F1 without labeled ground-truth data. No measured attack-detection accuracy is claimed.
 
 ---
 
 ## 🧪 Automated Testing
 
-Run the comprehensive unit test suite:
+Run the unit test suite:
 ```bash
 python -m pytest
 ```
-All 20 test cases pass, verifying database migrations, authentication, risk detection, ML training, ML inference, API endpoints, PDF generation, system status, and dataset management.
+The suite covers database migrations, authentication, monitoring, model feature preprocessing/inference, APIs, and sensor telemetry. Use isolated `SENTINEL_DATA_DIR` when running tests to avoid changing a local database.
 
 ---
 
 ## ⚠️ System & Security Limitations
 
-1. **Transport Layer Metadata vs. Deep Packet Inspection**: Feature extraction focuses on packet frequencies, ports, protocols, and volume. Encrypted payloads (e.g. HTTPS TLS payloads) are analyzed by traffic pattern rather than plaintext inspection.
-2. **Scapy Windows Capture Requirements**: Live packet capture requires Administrator privileges and Npcap installed with WinPcap compatibility mode.
+1. **Detection is not validated attack classification**: Rule and baseline thresholds are configurable heuristics. Anomaly scores are not confidence values. No measured attack-detection accuracy is claimed.
+2. **Scapy Windows Capture Requirements**: Packet capture requires Administrator privileges and Npcap. See the documented bounded-prefix limitation above; strict payload exclusion requires a metadata-only exporter rather than the bundled packet sensor.

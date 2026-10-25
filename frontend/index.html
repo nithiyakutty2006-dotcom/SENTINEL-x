@@ -88,9 +88,12 @@
             </div>
             <div class="status-pills">
                 <div class="badge badge-status" id="badgeStatus">● SYSTEM READY</div>
-                <div class="badge badge-mode" id="badgeMode">MODE: IDLE</div>
+                <div class="badge badge-mode" id="badgeMode">ENGINE: IDLE</div>
+                <div class="badge" id="badgeDataSource">DATA SOURCES: NONE</div>
+                <div class="badge" id="badgeSensor">SENSOR: NOT CONFIGURED</div>
                 <div class="badge badge-packets" id="badgePackets">PACKETS: 0</div>
-                <div class="badge" id="badgeLastPacket" style="color: var(--purple);">LAST PKT: WAITING</div>
+                <div class="badge" id="badgeLastPacket" style="color: var(--purple);">LAST PKT: N/A</div>
+                <div class="badge" id="badgeLastEventTime">LAST EVENT: NONE</div>
             </div>
         </div>
 
@@ -114,11 +117,11 @@
                         <div class="card-value" id="valEvents" style="color: var(--green)">0</div>
                     </div>
                     <div class="stat-card">
-                        <div class="card-label">CRITICAL THREATS</div>
+                        <div class="card-label">CRITICAL-RISK EVENTS</div>
                         <div class="card-value" id="valCritical" style="color: var(--red)">0</div>
                     </div>
                     <div class="stat-card">
-                        <div class="card-label">HIGH THREATS</div>
+                        <div class="card-label">HIGH-RISK EVENTS</div>
                         <div class="card-value" id="valHigh" style="color: var(--orange)">0</div>
                     </div>
                     <div class="stat-card">
@@ -179,7 +182,7 @@
                 <!-- Live Threat Feed Table -->
                 <div class="panel-box" style="margin-top: 20px;">
                     <div class="panel-header">
-                        <div class="panel-title">LIVE THREAT FEED & HYBRID AI ANOMALY STREAM</div>
+                        <div class="panel-title">SUSPICIOUS ACTIVITY FEED (NOT CONFIRMED ATTACKS)</div>
                     </div>
                     <table class="data-table">
                         <thead>
@@ -192,12 +195,12 @@
                                 <th>Protocol</th>
                                 <th>Risk</th>
                                 <th>Severity</th>
-                                <th>AI Score</th>
+                                <th>Model Anomaly Score</th>
                                 <th>Detection Rationale</th>
                             </tr>
                         </thead>
                         <tbody id="threatFeedBody">
-                            <tr><td colspan="10" style="text-align: center; color: var(--text-muted);">Waiting for network telemetry... Start Real Monitoring or run Demo Simulation.</td></tr>
+                            <tr><td colspan="10" style="text-align: center; color: var(--text-muted);">No persisted telemetry yet. Configure a local sensor or explicitly start Demo Monitoring.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -232,6 +235,7 @@
                             <select id="eventSourceFilter" class="form-control" style="width: 130px;" onchange="fetchEvents()">
                                 <option value="ALL">All Sources</option>
                                 <option value="REAL">REAL</option>
+                                <option value="LIVE">LIVE SENSOR</option>
                                 <option value="DEMO">DEMO</option>
                                 <option value="DATASET">DATASET</option>
                             </select>
@@ -247,13 +251,15 @@
                                 <th>Device</th>
                                 <th>Src IP</th>
                                 <th>Dst IP</th>
-                                <th>Port</th>
+                                <th>Source Port</th>
+                                <th>Destination Port</th>
                                 <th>Protocol</th>
                                 <th>Packets</th>
+                                <th>Bytes</th>
                                 <th>Traffic</th>
                                 <th>Risk</th>
                                 <th>Severity</th>
-                                <th>AI Score</th>
+                                <th>Model Anomaly Score</th>
                                 <th>Action</th>
                             </tr>
                         </thead>

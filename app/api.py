@@ -1,6 +1,13 @@
-from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, File
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Literal
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, Query, Response, UploadFile, File, Request
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress, ValidationError
 from typing import Optional, List
 import os
 
@@ -13,8 +20,12 @@ from app.auth import (
 from app.monitoring import monitoring_service
 from app.detection import model_manager
 from app.reports_gen import generate_pdf_report, generate_csv_report
+from app.sensor_auth import SensorRequestError, configured_sensor, verify_sensor_request
+from app.detection import process_event
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
+SENSOR_MAX_BODY_BYTES = 256 * 1024
 
 # Pydantic Request Models
 class LoginRequest(BaseModel):
@@ -37,6 +48,104 @@ class AlertUpdateRequest(BaseModel):
 
 class SimulationRequest(BaseModel):
     scenario: Optional[str] = "Critical Event"
+
+
+class SensorTelemetryEvent(BaseModel):
+    event_id: UUID
+    flow_id: str = Field(min_length=1, max_length=128)
+    timestamp: datetime
+    source_ip: IPvAnyAddress
+    destination_ip: IPvAnyAddress
+    source_port: int = Field(ge=0, le=65535, strict=True)
+    destination_port: int = Field(ge=0, le=65535, strict=True)
+    protocol: Literal["TCP", "UDP", "OTHER"]
+    packets: int = Field(ge=1, le=10_000_000, strict=True)
+    bytes: int = Field(ge=0, le=1_000_000_000, strict=True)
+    connections: int = Field(ge=0, le=1_000_000, strict=True)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SensorTelemetryBatch(BaseModel):
+    events: List[SensorTelemetryEvent] = Field(min_length=1, max_length=100)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+async def _read_sensor_request(request: Request):
+    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
+        raise HTTPException(status_code=415, detail="Sensor requests must use application/json.")
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > SENSOR_MAX_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Sensor request body is too large.")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header.") from exc
+
+    chunks = []
+    body_size = 0
+    async for chunk in request.stream():
+        body_size += len(chunk)
+        if body_size > SENSOR_MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Sensor request body is too large.")
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    try:
+        sensor_id = verify_sensor_request(
+            request.headers.get("x-sentinel-sensor-id", ""),
+            request.headers.get("x-sentinel-timestamp", ""),
+            request.headers.get("x-sentinel-nonce", ""),
+            request.headers.get("x-sentinel-signature", ""),
+            body,
+        )
+    except SensorRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return sensor_id, body
+
+
+def _sensor_status():
+    try:
+        configured = configured_sensor()
+    except SensorRequestError:
+        return {
+            "configured": False,
+            "sensor_id": None,
+            "online": False,
+            "last_heartbeat": None,
+            "last_event": None,
+            "status": "INVALID CONFIGURATION",
+        }
+    if configured is None:
+        return {
+            "configured": False,
+            "sensor_id": None,
+            "online": False,
+            "last_heartbeat": None,
+            "last_event": None,
+            "status": "NOT CONFIGURED",
+        }
+
+    sensor_id, _ = configured
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT last_heartbeat_epoch, last_event FROM sensors WHERE sensor_id=?",
+        (sensor_id,),
+    ).fetchone()
+    conn.close()
+    heartbeat_epoch = row["last_heartbeat_epoch"] if row else None
+    online = heartbeat_epoch is not None and time.time() - heartbeat_epoch <= 90
+    return {
+        "configured": True,
+        "sensor_id": sensor_id,
+        "online": online,
+        "last_heartbeat": (
+            datetime.fromtimestamp(heartbeat_epoch, timezone.utc).isoformat()
+            if heartbeat_epoch is not None else None
+        ),
+        "last_event": row["last_event"] if row else None,
+        "status": "ONLINE" if online else "OFFLINE",
+    }
 
 # 1. Authentication Endpoints
 @router.post("/auth/login")
@@ -98,6 +207,16 @@ def get_dashboard_stats(source_type: Optional[str] = None):
         SELECT protocol, COUNT(*) as cnt FROM events {where_clause} GROUP BY protocol
     """, params).fetchall()
     protocols = {r["protocol"]: r["cnt"] for r in proto_rows}
+    source_rows = conn.execute(
+        "SELECT DISTINCT source_type FROM events WHERE source_type IS NOT NULL"
+    ).fetchall()
+    source_types = sorted({
+        "LIVE" if row["source_type"] == "REAL" else row["source_type"]
+        for row in source_rows
+    })
+    latest_event = conn.execute(
+        "SELECT timestamp FROM events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
 
     return {
         "status": mon_status["mode"],
@@ -116,6 +235,9 @@ def get_dashboard_stats(source_type: Optional[str] = None):
         "active_alerts": active_alerts or 0,
         "protocols": protocols,
         "avg_risk": round(stats["avg_risk"] or 0, 1),
+        "source_types": source_types,
+        "last_event_time": latest_event["timestamp"] if latest_event else None,
+        "sensor": _sensor_status(),
         "ml_status": ml_status,
         "recent_events": recent_list
     }
@@ -311,6 +433,114 @@ def save_settings(req: SettingsRequest, username: str = Query("admin"), role: st
     return {"success": True, "message": "Settings updated successfully."}
 
 # 9. Monitoring Control Endpoints
+@router.get("/sensors/health")
+def get_sensor_health():
+    return _sensor_status()
+
+
+@router.post("/sensors/heartbeat")
+async def sensor_heartbeat(request: Request):
+    sensor_id, body = await _read_sensor_request(request)
+    if body != b"{}":
+        raise HTTPException(status_code=422, detail="Heartbeat body must be an empty JSON object.")
+
+    now = time.time()
+    conn = get_db_connection()
+    conn.execute("""
+        INSERT INTO sensors(sensor_id, last_heartbeat_epoch, last_event)
+        VALUES(?,?,NULL)
+        ON CONFLICT(sensor_id) DO UPDATE SET last_heartbeat_epoch=excluded.last_heartbeat_epoch
+    """, (sensor_id, now))
+    conn.commit()
+    conn.close()
+    return {
+        "success": True,
+        "sensor_id": sensor_id,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.post("/sensors/ingest")
+async def ingest_sensor_telemetry(request: Request):
+    sensor_id, body = await _read_sensor_request(request)
+    try:
+        batch = SensorTelemetryBatch.model_validate(json.loads(body))
+    except ValidationError as exc:
+        # Don't echo telemetry values into validation responses.
+        raise HTTPException(status_code=422, detail="Telemetry batch failed validation.") from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Telemetry batch must be valid JSON.") from exc
+
+    now_utc = datetime.now(timezone.utc)
+    pending = []
+    for event in batch.events:
+        if event.timestamp.tzinfo is None or event.timestamp.utcoffset() is None:
+            raise HTTPException(status_code=422, detail="Telemetry timestamps must include a timezone.")
+        event_time = event.timestamp.astimezone(timezone.utc)
+        if event_time > now_utc + timedelta(minutes=5):
+            raise HTTPException(status_code=422, detail="Telemetry timestamp is too far in the future.")
+        if event_time < now_utc - timedelta(hours=24):
+            raise HTTPException(status_code=422, detail="Telemetry timestamp is older than the ingestion window.")
+        pending.append((event, event_time.strftime("%Y-%m-%d %H:%M:%S")))
+
+    accepted = 0
+    duplicates = 0
+    for event, timestamp in pending:
+        conn = get_db_connection()
+        exists = conn.execute(
+            "SELECT 1 FROM events WHERE sensor_id=? AND event_id=?",
+            (sensor_id, str(event.event_id)),
+        ).fetchone()
+        conn.close()
+        if exists:
+            duplicates += 1
+            continue
+
+        processed = {
+            "timestamp": timestamp,
+            "device": sensor_id,
+            "source_ip": str(event.source_ip),
+            "destination_ip": str(event.destination_ip),
+            "source_port": event.source_port,
+            "destination_port": event.destination_port,
+            "port": event.destination_port,
+            "protocol": event.protocol,
+            "packets": event.packets,
+            "bytes": event.bytes,
+            "traffic": round(event.bytes / (1024 * 1024), 4),
+            "connections": event.connections,
+            "unknown": 0,
+            "flow_id": event.flow_id,
+            "sensor_id": sensor_id,
+            "event_id": str(event.event_id),
+            "source_type": "LIVE",
+        }
+        try:
+            process_event(processed)
+        except Exception as exc:
+            logger.exception("Live sensor event processing failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Telemetry processing failed. Retry the event with a newly signed request.",
+            ) from exc
+
+        conn = get_db_connection()
+        conn.execute("""
+            INSERT INTO sensors(sensor_id, last_heartbeat_epoch, last_event)
+            VALUES(?,?,?)
+            ON CONFLICT(sensor_id) DO UPDATE SET
+                last_heartbeat_epoch=excluded.last_heartbeat_epoch,
+                last_event=excluded.last_event
+        """, (sensor_id, time.time(), timestamp))
+        conn.commit()
+        conn.close()
+        accepted += 1
+
+    if not pending:
+        return {"success": True, "accepted": 0, "duplicates": duplicates}
+    return {"success": True, "accepted": accepted, "duplicates": duplicates}
+
+
 @router.get("/monitoring/interfaces")
 def get_monitoring_interfaces():
     return monitoring_service.get_available_interfaces()
@@ -403,7 +633,19 @@ def get_model_registry():
 def get_model_evaluations():
     conn = get_db_connection()
     rows = conn.execute("SELECT * FROM model_evaluations ORDER BY id DESC").fetchall()
-    return [dict(r) for r in rows]
+    results = []
+    for row in rows:
+        result = dict(row)
+        if result["status"] == "COMPLETED":
+            result.update({
+                "accuracy": None,
+                "precision_score": None,
+                "recall_score": None,
+                "f1_score": None,
+                "status": "LEGACY_UNVERIFIED",
+            })
+        results.append(result)
+    return results
 
 @router.get("/system/status")
 def get_system_status():
@@ -417,6 +659,7 @@ def get_system_status():
         "local_ip": monitoring_service.local_ip,
         "hostname": platform.node(),
         "monitoring": mon,
+        "sensor": _sensor_status(),
         "ml_status": ml,
         "database": "SQLite (sentinel_x_v2.db)",
         "server_status": "ONLINE"

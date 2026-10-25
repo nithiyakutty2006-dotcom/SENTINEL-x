@@ -1,29 +1,65 @@
 import os
+import logging
 import numpy as np
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 from keras.models import load_model
-from ml.preprocessing import FeatureScaler
+from ml.preprocessing import (
+    FEATURE_NAMES,
+    FEATURE_SCHEMA_VERSION,
+    FeatureScaler,
+)
 from app.paths import data_path
 
+logger = logging.getLogger(__name__)
+
 class ModelInference:
+    FEATURE_NAMES = FEATURE_NAMES
+
     def __init__(self):
         self.model = None
         self.scaler = FeatureScaler()
-        self.threshold = 0.5 # Default fallback
+        self.threshold = None
         self.loaded = False
+        self.load_error = None
 
     def load(self, threshold=0.5):
+        self.loaded = False
+        self.load_error = None
+        self.model = None
+        self.threshold = None
         model_path = data_path("models", "autoencoder.keras")
-        if os.path.exists(model_path) and self.scaler.load():
-            try:
-                self.model = load_model(model_path)
-                self.threshold = threshold
-                self.loaded = True
-                return True
-            except Exception as e:
-                print(f"Error loading model: {e}")
-                self.loaded = False
-        return False
+        if not os.path.exists(model_path):
+            return False
+        try:
+            if not self.scaler.load():
+                raise ValueError("Saved feature scaler is missing.")
+            if (
+                self.scaler.feature_names != self.FEATURE_NAMES
+                or self.scaler.schema_version != FEATURE_SCHEMA_VERSION
+            ):
+                raise ValueError("Saved scaler feature schema does not match inference.")
+            expected_features = len(self.FEATURE_NAMES)
+            if (
+                self.scaler.min_vals is None
+                or self.scaler.max_vals is None
+                or self.scaler.range_vals is None
+                or len(self.scaler.min_vals) != expected_features
+                or len(self.scaler.max_vals) != expected_features
+                or len(self.scaler.range_vals) != expected_features
+            ):
+                raise ValueError("Saved scaler feature count does not match the inference schema.")
+            self.model = load_model(model_path)
+            if self.model.input_shape[-1] != expected_features:
+                raise ValueError("Saved model feature count does not match the inference schema.")
+            self.threshold = threshold
+            self.loaded = True
+            return True
+        except Exception as exc:
+            self.load_error = str(exc)
+            logger.exception("Saved anomaly model or feature scaler could not be loaded.")
+            self.model = None
+            self.threshold = None
+            return False
 
     def extract_features(self, event):
         """
@@ -49,7 +85,7 @@ class ModelInference:
         Predict anomaly score (0-100) for a single event.
         """
         if not self.loaded or self.model is None:
-            return 0.0, False, "Model not loaded"
+            return None, False, "Model not loaded"
             
         features = self.extract_features(event)
         

@@ -3,7 +3,7 @@ import numpy as np
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 from keras.models import Sequential
 from keras.layers import Dense, Input, Dropout
-from ml.preprocessing import FeatureScaler
+from ml.preprocessing import FEATURE_NAMES, FeatureScaler
 from app.paths import data_path
 
 MODEL_PATH = str(data_path("models", "autoencoder.keras"))
@@ -20,7 +20,7 @@ def build_autoencoder(input_dim):
     model.compile(optimizer='adam', loss='mse')
     return model
 
-def train_model(data):
+def train_model(data, feature_names=FEATURE_NAMES):
     """
     Train autoencoder on historical normal data.
     data: list of dicts or list of lists representing [packets, traffic, connections, unknown, port_encoded, protocol_encoded]
@@ -30,7 +30,7 @@ def train_model(data):
         raise ValueError("Not enough data to train. Need at least 10 samples.")
         
     scaler = FeatureScaler()
-    scaler.fit(data)
+    scaler.fit(data, feature_names=feature_names)
     scaler.save()
     
     scaled_data = scaler.transform(data)

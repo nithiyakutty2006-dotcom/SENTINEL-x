@@ -47,6 +47,16 @@ def run_migrations(conn):
     if not column_exists("incidents", "source_type"):
         cursor.execute("ALTER TABLE incidents ADD COLUMN source_type TEXT DEFAULT 'REAL'")
 
+    for column, definition in (
+        ("source_port", "INTEGER DEFAULT 0"),
+        ("bytes", "INTEGER DEFAULT 0"),
+        ("flow_id", "TEXT"),
+        ("sensor_id", "TEXT"),
+        ("event_id", "TEXT"),
+    ):
+        if not column_exists("events", column):
+            cursor.execute(f"ALTER TABLE events ADD COLUMN {column} {definition}")
+
     conn.commit()
 
 def init_db():
@@ -190,10 +200,36 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sensors(
+        sensor_id TEXT PRIMARY KEY,
+        last_heartbeat_epoch REAL NOT NULL,
+        last_event TEXT
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sensor_nonces(
+        sensor_id TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY(sensor_id, nonce)
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sensor_requests(
+        sensor_id TEXT NOT NULL,
+        requested_at REAL NOT NULL
+    )
+    """)
+
     conn.commit()
 
     # Run safe column additions
     run_migrations(conn)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_sensor_event
+        ON events(sensor_id, event_id)
+    """)
 
     # Bootstrap configured users only; never create public demo credentials.
     cursor.execute("SELECT COUNT(*) FROM users")
