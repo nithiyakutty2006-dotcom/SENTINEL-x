@@ -2,11 +2,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import os
 
 from app.api import router as api_router
 from app.database import init_db
+from app.auth import SESSION_COOKIE_NAME, resolve_web_session
 
 app = FastAPI(
     title="SENTINEL-X 2.0 | AI Security Operations Center",
@@ -14,17 +15,33 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Include API Router
 app.include_router(api_router)
+
+
+@app.middleware("http")
+async def require_api_session(request, call_next):
+    public_routes = {
+        ("POST", "/api/auth/login"),
+        ("GET", "/api/sensors/health"),
+        ("POST", "/api/sensors/validate"),
+        ("POST", "/api/sensors/heartbeat"),
+        ("POST", "/api/sensors/ingest"),
+    }
+    if request.url.path.startswith("/api/") and (
+        request.method, request.url.path
+    ) not in public_routes:
+        user = resolve_web_session(
+            request.cookies.get(SESSION_COOKIE_NAME, "")
+        )
+        if user is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required."},
+            )
+        request.state.user = user
+    return await call_next(request)
+
 
 # Mount Static Frontend Files
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")

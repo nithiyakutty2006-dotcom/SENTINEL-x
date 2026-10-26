@@ -61,17 +61,19 @@ const tabTitles = {
     help: { title: "HELP & SYSTEM STATUS", sub: "Platform diagnostics, network interface status, and operator instructions" }
 };
 
-// Check Session on Load
-window.onload = function() {
-    const savedUser = sessionStorage.getItem('sentinel_user');
-    const savedRole = sessionStorage.getItem('sentinel_role');
-    
-    if (savedUser && savedRole) {
-        currentUser = savedUser;
-        currentRole = savedRole;
+// Verify the server-side session before showing protected application data.
+window.onload = async function() {
+    try {
+        const response = await fetch('/api/auth/session', { cache: 'no-store' });
+        const data = await readApiResponse(response);
+        currentUser = data.user.username;
+        currentRole = data.user.role;
         document.getElementById('loginModal').style.display = 'none';
         initApp();
-    } else {
+    } catch {
+        sessionStorage.clear();
+        currentUser = null;
+        currentRole = null;
         document.getElementById('loginModal').style.display = 'flex';
     }
 };
@@ -95,8 +97,6 @@ function handleLogin(event) {
     .then(data => {
         currentUser = data.user.username;
         currentRole = data.user.role;
-        sessionStorage.setItem('sentinel_user', currentUser);
-        sessionStorage.setItem('sentinel_role', currentRole);
         document.getElementById('loginModal').style.display = 'none';
         errDiv.style.display = 'none';
         initApp();
@@ -107,13 +107,19 @@ function handleLogin(event) {
     });
 }
 
-function handleLogout() {
-    fetch(`/api/auth/logout?username=${currentUser}`, { method: 'POST' });
-    sessionStorage.clear();
-    currentUser = null;
-    currentRole = null;
-    if (pollTimer) clearInterval(pollTimer);
-    document.getElementById('loginModal').style.display = 'flex';
+async function handleLogout() {
+    try {
+        const response = await fetch('/api/auth/logout', { method: 'POST' });
+        if (!response.ok && response.status !== 401) await readApiResponse(response);
+    } catch (error) {
+        alert(`Logout request failed: ${error.message}`);
+    } finally {
+        sessionStorage.clear();
+        currentUser = null;
+        currentRole = null;
+        if (pollTimer) clearInterval(pollTimer);
+        document.getElementById('loginModal').style.display = 'flex';
+    }
 }
 
 function initApp() {
@@ -244,8 +250,13 @@ function initCharts() {
     }
 }
 
+function selectedDashboardSource() {
+    return document.getElementById('dashboardSourceFilter')?.value || 'LIVE';
+}
+
 function fetchRiskHistoryChart() {
-    fetch('/api/dashboard/risk-history')
+    const sourceType = selectedDashboardSource();
+    fetch(`/api/dashboard/risk-history?source_type=${encodeURIComponent(sourceType)}`)
         .then(res => res.json())
         .then(data => {
             const emptyEl = document.getElementById('riskChartEmpty');
@@ -273,7 +284,8 @@ function fetchRiskHistoryChart() {
 
 // Telemetry & Dashboard Stats
 function fetchDashboardStats() {
-    fetch('/api/dashboard/stats')
+    const sourceType = selectedDashboardSource();
+    fetch(`/api/dashboard/stats?source_type=${encodeURIComponent(sourceType)}`)
         .then(readApiResponse)
         .then(data => {
             // Badges
@@ -292,19 +304,36 @@ function fetchDashboardStats() {
             const sensor = data.sensor || {};
             sensorBadge.innerText = `SENSOR: ${sensor.status || 'UNKNOWN'}`;
             sensorBadge.style.color = sensor.online ? 'var(--green)' : 'var(--yellow)';
-            sensorBadge.title = sensor.last_heartbeat
+            sensorBadge.title = sensor.message || (sensor.last_heartbeat
                 ? `Last authenticated heartbeat: ${sensor.last_heartbeat}`
-                : 'No authenticated sensor heartbeat has been received.';
+                : 'No authenticated sensor heartbeat has been received.');
+            const liveModeBadge = document.getElementById('badgeLiveMode');
+            liveModeBadge.innerText = sensor.configured
+                ? `LIVE — LAPTOP SENSOR: ${sensor.status}`
+                : 'LIVE — LAPTOP SENSOR: NOT CONFIGURED';
+            liveModeBadge.title = sensor.message || '';
+            liveModeBadge.style.color = sensor.online ? 'var(--green)' : 'var(--yellow)';
+            const uploadBadge = document.getElementById('badgeSensorUpload');
+            uploadBadge.innerText = sensor.last_upload
+                ? `LAST UPLOAD: ${sensor.last_upload}`
+                : 'LAST UPLOAD: NONE';
+            if (sensor.last_upload_error) {
+                uploadBadge.innerText += ` | ERROR: ${sensor.last_upload_error}`;
+                uploadBadge.style.color = 'var(--red)';
+            } else {
+                uploadBadge.style.color = 'var(--muted)';
+            }
             document.getElementById('badgeLastEventTime').innerText =
-                `LAST EVENT: ${sensor.last_event || data.last_event_time || 'NONE'}`;
-            document.getElementById('badgePackets').innerText = `PACKETS: ${data.packets_captured}`;
+                `LAST EVENT: ${(sourceType === 'LIVE' && sensor.last_event) || data.last_event_time || 'NONE'}`;
+            document.getElementById('badgePackets').innerText =
+                `PACKETS: ${data.persisted_packet_count ?? 'N/A'}`;
             if (document.getElementById('badgeLastPacket')) {
-                if (data.last_packet_time) {
-                    const timeOnly = data.last_packet_time.split(" ").pop() || data.last_packet_time;
+                if (data.last_persisted_packet_time) {
+                    const timeOnly = data.last_persisted_packet_time.split(" ").pop() || data.last_persisted_packet_time;
                     document.getElementById('badgeLastPacket').innerText = `LAST PKT: ${timeOnly}`;
                     document.getElementById('badgeLastPacket').style.color = "var(--green)";
                 } else {
-                    document.getElementById('badgeLastPacket').innerText = `LAST PKT: WAITING`;
+                    document.getElementById('badgeLastPacket').innerText = `LAST PKT: N/A`;
                     document.getElementById('badgeLastPacket').style.color = "var(--purple)";
                 }
             }
@@ -348,7 +377,7 @@ function fetchDashboardStats() {
             // Threat Feed Table
             const tbody = document.getElementById('threatFeedBody');
             if (data.recent_events.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted);">No persisted telemetry yet. Configure a local sensor or explicitly start Demo Monitoring.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; color: var(--text-muted);">No recent events for the selected source. Check the sensor status above, or explicitly start Demo Monitoring.</td></tr>`;
                 return;
             }
 
@@ -356,12 +385,14 @@ function fetchDashboardStats() {
             data.recent_events.forEach(ev => {
                 const tr = document.createElement('tr');
                 const srcBadge = ev.source_type === 'REAL' ? 'badge-status' : 'badge-mode';
+                const endpointA = ev.endpoint_mode === 'LOCAL_REMOTE' ? 'Local' : 'Source';
+                const endpointB = ev.endpoint_mode === 'LOCAL_REMOTE' ? 'Remote' : 'Destination';
                 tr.innerHTML = `
                     <td>${ev.timestamp}</td>
                     <td><span class="badge ${srcBadge}">${displaySource(ev.source_type || 'REAL')}</span></td>
                     <td><b>${ev.device}</b></td>
-                    <td>${ev.source_ip}:${ev.source_port || 0}</td>
-                    <td>${ev.destination_ip}:${ev.destination_port ?? ev.port ?? 0}</td>
+                    <td>${endpointA}: ${ev.source_ip}:${ev.source_port || 0}</td>
+                    <td>${endpointB}: ${ev.destination_ip}:${ev.destination_port ?? ev.port ?? 0}</td>
                     <td><span class="badge">${ev.protocol}</span></td>
                     <td><b>${ev.risk}%</b></td>
                     <td class="sev-${ev.severity}">${ev.severity}</td>
@@ -395,21 +426,28 @@ function fetchEvents() {
         .then(data => {
             const tbody = document.getElementById('eventsTableBody');
             tbody.innerHTML = '';
+            if (data.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="17" style="text-align: center; color: var(--text-muted);">No recent events match the selected filters. Check the sensor status above.</td></tr>`;
+                return;
+            }
             data.forEach(ev => {
                 const tr = document.createElement('tr');
+                const endpointA = ev.endpoint_mode === 'LOCAL_REMOTE' ? 'Local' : 'Source';
+                const endpointB = ev.endpoint_mode === 'LOCAL_REMOTE' ? 'Remote' : 'Destination';
                 tr.innerHTML = `
                     <td>#${ev.id}</td>
                     <td>${ev.timestamp}</td>
                     <td><span class="badge">${displaySource(ev.source_type || 'REAL')}</span></td>
                     <td>${ev.device}</td>
-                    <td>${ev.source_ip}</td>
-                    <td>${ev.destination_ip}</td>
+                    <td>${endpointA}: ${ev.source_ip}</td>
+                    <td>${endpointB}: ${ev.destination_ip}</td>
                     <td>${ev.source_port || 0}</td>
                     <td>${ev.destination_port ?? ev.port ?? 0}</td>
                     <td>${ev.protocol}</td>
-                    <td>${ev.packets}</td>
+                    <td>${ev.packets ?? 'N/A'}</td>
                     <td>${ev.bytes ?? 'N/A'}</td>
-                    <td>${ev.traffic} MB</td>
+                    <td>${Number.isFinite(ev.traffic) ? ev.traffic + ' MB' : 'N/A'}</td>
+                    <td>${ev.connection_state || 'N/A'}</td>
                     <td><b>${ev.risk}%</b></td>
                     <td class="sev-${ev.severity}">${ev.severity}</td>
                     <td>${Number.isFinite(ev.ai_score) ? ev.ai_score.toFixed(1) + ' (not confidence)' : 'N/A'}</td>
@@ -418,7 +456,7 @@ function fetchEvents() {
                 tbody.appendChild(tr);
             });
         })
-        .catch(err => showTableError('eventsTableBody', 16, err));
+        .catch(err => showTableError('eventsTableBody', 17, err));
 }
 
 function showEventDetail(id) {
@@ -426,15 +464,18 @@ function showEventDetail(id) {
         .then(res => res.json())
         .then(ev => {
             const content = document.getElementById('eventDetailContent');
+            const endpointA = ev.endpoint_mode === 'LOCAL_REMOTE' ? 'Local' : 'Source';
+            const endpointB = ev.endpoint_mode === 'LOCAL_REMOTE' ? 'Remote' : 'Destination';
             content.innerHTML = `
                 <b>Event ID:</b> #${ev.id}<br>
                 <b>Timestamp:</b> ${ev.timestamp}<br>
                 <b>Source Type:</b> ${ev.source_type}<br>
                 <b>Device:</b> ${ev.device}<br>
-                <b>Source:</b> ${ev.source_ip}:${ev.source_port || 0}<br>
-                <b>Destination:</b> ${ev.destination_ip}:${ev.destination_port ?? ev.port ?? 0}<br>
+                <b>${endpointA}:</b> ${ev.source_ip}:${ev.source_port || 0}<br>
+                <b>${endpointB}:</b> ${ev.destination_ip}:${ev.destination_port ?? ev.port ?? 0}<br>
                 <b>Protocol:</b> ${ev.protocol}<br>
-                <b>Packets:</b> ${ev.packets} | <b>Bytes:</b> ${ev.bytes ?? 'N/A'} | <b>Traffic:</b> ${ev.traffic} MB<br>
+                <b>Packets:</b> ${ev.packets ?? 'N/A'} | <b>Bytes:</b> ${ev.bytes ?? 'N/A'} | <b>Traffic:</b> ${Number.isFinite(ev.traffic) ? ev.traffic + ' MB' : 'N/A'}<br>
+                <b>TCP State:</b> ${ev.connection_state || 'N/A'}<br>
                 <b>Rule Risk Score:</b> ${ev.rule_score || 0}%<br>
                 <b>Baseline Anomaly Score:</b> ${ev.baseline_score || 0}%<br>
                 <b>Model Anomaly Score (not confidence):</b> ${Number.isFinite(ev.ai_score) ? ev.ai_score.toFixed(1) : 'N/A'}<br>
@@ -456,7 +497,8 @@ function closeModal(id) {
 // Fetch Incidents
 function fetchIncidents() {
     const status = document.getElementById('incidentStatusFilter')?.value || 'ALL';
-    fetch(`/api/incidents?status=${status}`)
+    const sourceType = encodeURIComponent(selectedDashboardSource());
+    fetch(`/api/incidents?status=${status}&source_type=${sourceType}`)
         .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('incidentsTableBody');
@@ -488,7 +530,7 @@ function fetchIncidents() {
 
 function updateIncidentStatus(id, newStatus) {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
-    fetch(`/api/incidents/${id}?username=${currentUser}`, {
+    fetch(`/api/incidents/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
@@ -497,7 +539,7 @@ function updateIncidentStatus(id, newStatus) {
 
 // Fetch Devices
 function fetchDevices() {
-    fetch('/api/devices')
+    fetch(`/api/devices?source_type=${encodeURIComponent(selectedDashboardSource())}`)
         .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('devicesTableBody');
@@ -507,9 +549,9 @@ function fetchDevices() {
                 tr.innerHTML = `
                     <td><b>${d.device}</b></td>
                     <td><span class="badge">${displaySource(d.source_type || 'REAL')}</span></td>
-                    <td>${d.avg_packets.toFixed(1)}</td>
-                    <td>${d.avg_traffic.toFixed(3)} MB</td>
-                    <td>${d.avg_connections.toFixed(1)}</td>
+                    <td>${Number.isFinite(d.avg_packets) ? d.avg_packets.toFixed(1) : 'N/A'}</td>
+                    <td>${Number.isFinite(d.avg_traffic) ? d.avg_traffic.toFixed(3) + ' MB' : 'N/A'}</td>
+                    <td>${Number.isFinite(d.avg_connections) ? d.avg_connections.toFixed(1) : 'N/A'}</td>
                     <td><span class="badge">${d.samples}</span></td>
                     <td><b>${d.max_risk}%</b></td>
                     <td>${d.incident_count}</td>
@@ -523,7 +565,7 @@ function fetchDevices() {
 
 // Fetch Alerts
 function fetchAlerts() {
-    fetch('/api/alerts')
+    fetch(`/api/alerts?source_type=${encodeURIComponent(selectedDashboardSource())}`)
         .then(readApiResponse)
         .then(data => {
             const tbody = document.getElementById('alertsTableBody');
@@ -552,7 +594,7 @@ function fetchAlerts() {
 
 function acknowledgeAlert(id) {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
-    fetch(`/api/alerts/${id}?username=${currentUser}`, {
+    fetch(`/api/alerts/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'ACKNOWLEDGED' })
@@ -647,7 +689,7 @@ function saveSettings(event) {
         selected_interface: document.getElementById('settingIface') ? document.getElementById('settingIface').value : ""
     };
 
-    fetch(`/api/settings?username=${currentUser}&role=${currentRole}`, {
+    fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -660,7 +702,7 @@ function trainMlModel() {
     if (currentRole !== 'ADMIN') { alert("Permission denied. Admin role required."); return; }
     
     alert("Training Deep Learning Autoencoder model on baseline historical events... Please wait.");
-    fetch(`/api/models/train?username=${currentUser}&role=${currentRole}`, { method: 'POST' })
+    fetch('/api/models/train', { method: 'POST' })
         .then(res => res.json())
         .then(data => {
             alert(data.message);
@@ -670,7 +712,7 @@ function trainMlModel() {
 }
 
 function evaluateMlModel() {
-    fetch(`/api/models/evaluate?username=${currentUser}&role=${currentRole}`, { method: 'POST' })
+    fetch('/api/models/evaluate', { method: 'POST' })
         .then(res => res.json())
         .then(data => {
             if (data.success) {
@@ -701,7 +743,7 @@ function handleDatasetImport(event) {
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
 
-    fetch(`/api/models/import-dataset?username=${currentUser}&role=${currentRole}`, {
+    fetch('/api/models/import-dataset', {
         method: 'POST',
         body: formData
     })
@@ -716,7 +758,7 @@ function handleDatasetImport(event) {
 // Toolbar Button Actions
 function startMonitoring() {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
-    fetch(`/api/monitoring/start?username=${currentUser}&role=${currentRole}`, { method: 'POST' })
+    fetch('/api/monitoring/start', { method: 'POST' })
         .then(readApiResponse)
         .then(data => {
             if (!data.success) {
@@ -730,7 +772,7 @@ function startMonitoring() {
 
 function pauseMonitoring() {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
-    fetch(`/api/monitoring/pause?username=${currentUser}&role=${currentRole}`, { method: 'POST' })
+    fetch('/api/monitoring/pause', { method: 'POST' })
         .then(readApiResponse)
         .then(data => {
             if (!data.success) throw new Error(data.message || 'The monitoring service did not stop.');
@@ -741,7 +783,7 @@ function pauseMonitoring() {
 
 function triggerSimulation() {
     if (currentRole === 'VIEWER') { alert("Viewer role is read-only."); return; }
-    fetch(`/api/monitoring/simulate?username=${currentUser}&role=${currentRole}`, {
+    fetch('/api/monitoring/simulate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario: 'Critical Event' })
@@ -752,11 +794,11 @@ function triggerSimulation() {
 }
 
 function exportPDF() {
-    window.open(`/api/reports/download/pdf?username=${currentUser}`, '_blank');
+    window.open('/api/reports/download/pdf', '_blank');
 }
 
 function exportCSV() {
-    window.open(`/api/reports/download/csv?username=${currentUser}`, '_blank');
+    window.open('/api/reports/download/csv', '_blank');
 }
 
 function fetchDatasets() {

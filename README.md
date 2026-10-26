@@ -26,10 +26,10 @@
    - **Help & System Status**: Live platform diagnostics, network interface diagnostics, and operator guide.
    - **Logout**: Secure session termination.
 
-3. **Opt-in Windows Network Sensor (`Scapy` / Npcap)**:
-   - A separate command-line sensor can aggregate selected-interface IPv4/IPv6 TCP/UDP flow metadata and send it to the backend over HTTPS.
+3. **Opt-in Windows TCP Connection Sensor**:
+   - A separate command-line process polls the selected Windows interface's TCP connection table; it does not open packet-capture devices or read packet bytes.
    - It starts only after an explicit `--run --interface ...` command; it is not auto-started by the website.
-   - See the Windows sensor section below for Npcap, administrator permissions, and capture limitations.
+   - Packet and byte counts are unavailable from this collection method and remain null rather than being estimated.
 
 4. **Strict Separation of Real Monitoring & Demo Simulation**:
    - Legacy host-captured packets are tagged as `source_type = "REAL"`; authenticated local sensor telemetry is tagged as `source_type = "LIVE"`.
@@ -75,7 +75,7 @@ SENTINEL-X/
 │   ├── paths.py                # Configurable runtime data directory
 │   ├── passwords.py            # Password hashing helpers
 │   ├── detection.py            # Hybrid AI + baseline + rule risk engine
-│   ├── monitoring.py           # Scapy packet sniffer & telemetry accumulator
+│   ├── monitoring.py           # Existing local Scapy monitor and demo lifecycle
 │   ├── reports_gen.py          # Dual PyMuPDF & ReportLab PDF / CSV generator
 │   └── api.py                  # Complete REST API routes (12+ endpoints)
 │
@@ -94,6 +94,7 @@ SENTINEL-X/
 │   ├── evaluation.py           # Model evaluation metrics calculation
 │   └── model_manager.py        # Model lifecycle, dataset imports, SQLite sync
 │
+├── sensor/                     # Opt-in Windows connection-table sensor
 ├── models/                     # Saved Keras models and scalers (.keras, .pkl)
 ├── data/                       # Datasets & offline CSV telemetry
 ├── reports/                    # Generated PDF reports
@@ -109,7 +110,8 @@ SENTINEL-X/
 
 ### 1. Prerequisites
 - **Python 3.9+** (Tested and verified on Python 3.13)
-- Windows packet capture driver: [Npcap](https://npcap.com/) (Required for Scapy live sniffing on Windows).
+- Windows PowerShell and the built-in `NetTCPIP` networking cmdlets (used by the no-payload sensor).
+- Npcap is only required if you explicitly use the existing legacy Scapy packet-capture mode; it is not used by the new connection-table sensor.
 
 ### 2. Install Dependencies
 ```bash
@@ -126,8 +128,12 @@ python main.py
 ```
 or:
 ```bash
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+python -m uvicorn main:app --host 127.0.0.1 --port 8011
 ```
+
+Keep the terminal running while testing. Uvicorn is a foreground process and
+stops when you press Ctrl+C or close its terminal. If startup succeeds, it logs
+that it is running at `http://127.0.0.1:8011`.
 
 ### Option B: Using Windows Batch Launcher
 Double-click `run.bat` or run:
@@ -137,7 +143,28 @@ run.bat
 
 ### Browser URL:
 Open any web browser and navigate to:
-👉 **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
+👉 **[http://127.0.0.1:8011](http://127.0.0.1:8011)**
+
+### Windows local sensor workflow (two PowerShell windows)
+
+The local launcher stores its SQLite database and a DPAPI-protected sensor
+secret under `%LOCALAPPDATA%\SentinelX`, outside OneDrive. Keep both windows
+open while monitoring:
+
+1. In PowerShell window A, from the project folder, run
+   `.\scripts\start_local_server.ps1`. Enter the local admin password at the
+   hidden prompt. On a new database it initializes the `admin` account; for an
+   existing local database, enter the existing account's password.
+2. In PowerShell window B, from the same project folder, run
+   `.\scripts\start_local_sensor.ps1`. It checks the backend and sensor
+   credentials, lists active adapters, then asks for the exact interface name
+   whose TCP connection table should be polled.
+3. Open `http://127.0.0.1:8011/` and log in as `admin`. Press Ctrl+C in window
+   B to stop the sensor; leave window A open until you are finished.
+
+The sensor reports this laptop's observable TCP connection metadata only. It
+does not capture packet payloads or packet/byte counts, does not provide UDP
+remote endpoints, and cannot see the phone's traffic or other hotspot clients.
 
 ---
 
@@ -208,11 +235,11 @@ TensorFlow/Keras make this service substantially heavier than a static site.
 Check Render build and runtime logs and choose a compute plan with sufficient
 memory. Free services also have filesystem and availability limitations.
 
-**Public deployment warning:** the current API accepts user/role values from
-client-supplied query parameters for several privileged operations and does
-not establish server-verified sessions. The login screen alone does not secure
-the API. Do not put real network telemetry or sensitive data on a public
-instance until server-side authorization is implemented and verified.
+The API uses a server-verified, database-backed session cookie for dashboard
+and operational routes. The cookie is HttpOnly and SameSite=Lax; roles for
+privileged operations are read from the authenticated database account, not
+from client-supplied query parameters. Keep the service's Environment settings
+and login credentials private.
 
 ---
 
@@ -239,7 +266,15 @@ instance until server-side authorization is implemented and verified.
 
 ## 🪟 Opt-in Windows Sensor for LIVE Telemetry
 
-The sensor runs on the Windows PC and sends flow metadata to the configured SENTINEL-X backend. Render only receives telemetry; it does not capture packets from Render or your LAN. The single configured sensor identity is set on the backend with `SENTINEL_SENSOR_ID` and `SENTINEL_SENSOR_SECRET`. Set the exact same values locally in the sensor terminal. Use a unique sensor ID (letters, digits, `.`, `_`, or `-`) and a randomly generated secret of at least 32 characters. Keep the secret only in Render's private Environment settings and the local process environment; never put it in source, `.env` committed to Git, browser JavaScript, or chat.
+The sensor runs on the Windows laptop and reads TCP connection metadata exposed by Windows for a selected interface. It never captures packet bytes. Render only receives telemetry; it does not observe traffic from Render or your hotspot. The single configured sensor identity is set on the backend with `SENTINEL_SENSOR_ID` and `SENTINEL_SENSOR_SECRET`. Set the same values locally in the sensor terminal. Use a unique sensor ID (letters, digits, `.`, `_`, or `-`) and a randomly generated secret of at least 32 characters. Keep the secret only in Render's private Environment settings and the local process environment; never put it in source, `.env` committed to Git, browser JavaScript, or chat.
+
+Deploy the backend revision containing the `/api/sensors/validate`,
+`/api/sensors/heartbeat`, and `/api/sensors/ingest` routes before starting this
+sensor. The current public Render service has health, heartbeat, and ingest
+routes but does not yet expose `/api/sensors/validate`; the sensor check will
+fail until a revision that adds that route is deployed. Its health endpoint
+currently reports `NOT CONFIGURED` until the sensor identity is added privately
+to the Render service Environment.
 
 ### Install and configure
 
@@ -249,70 +284,97 @@ The sensor runs on the Windows PC and sends flow metadata to the configured SENT
    python -m pip install -r requirements.txt
    ```
 
-2. Install **Npcap** from [npcap.com](https://npcap.com/). Select the option to enable WinPcap API-compatible mode if the installer offers it. Restart the terminal after installation.
-3. In the Render service's **Environment** settings, add `SENTINEL_SENSOR_ID` and `SENTINEL_SENSOR_SECRET`. Generate a secret locally (do not share it):
+2. No Npcap or other packet-capture driver is required by this sensor. Windows PowerShell's `Get-NetAdapter`, `Get-NetIPAddress`, and `Get-NetTCPConnection` cmdlets provide the connection table. Administrator elevation is not a packet-capture prerequisite, but may be needed to see connections owned by other users.
+3. In the same PowerShell terminal that will run the sensor, generate the
+   secret without printing it. The command copies it to the clipboard so it can
+   be pasted into Render's private Environment form; do not save or share the
+   value elsewhere:
 
    ```powershell
-   python -c "import secrets; print(secrets.token_urlsafe(48))"
-   ```
-
-   Copy the generated value directly into Render's private Environment UI and your local PowerShell environment. Do not put the value in `render.yaml`.
-4. Open **VS Code as Administrator** so Npcap access has the required permissions. In its PowerShell terminal, set the same identity and secret and the public URL:
-
-   ```powershell
-   $env:SENTINEL_SENSOR_ID = "your-configured-sensor-id"
-   $env:SENTINEL_SENSOR_SECRET = "the-secret-you-generated-locally"
+   $env:SENTINEL_SENSOR_ID = "windows-laptop-01"
    $env:SENTINEL_SENSOR_URL = "https://sentinel-x-72rs.onrender.com"
+   $sensorSecretBytes = New-Object 'System.Byte[]' 48
+   $randomGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+   try {
+       $randomGenerator.GetBytes($sensorSecretBytes)
+       $env:SENTINEL_SENSOR_SECRET = [Convert]::ToBase64String($sensorSecretBytes)
+       Set-Clipboard -Value $env:SENTINEL_SENSOR_SECRET
+   } finally {
+       $randomGenerator.Dispose()
+       [Array]::Clear($sensorSecretBytes, 0, $sensorSecretBytes.Length)
+   }
+   Write-Host "Sensor ID and secret are ready; the secret was not displayed."
    ```
 
-   These are placeholders: replace them locally with the values configured in Render. The environment applies only to processes started from this terminal.
-5. Start the web application separately if running it locally. For sensor-only local validation, the deployed Render site can receive telemetry:
+   Add those exact variable names to Render's private service Environment:
+   use the shown sensor ID and paste the clipboard secret into
+   `SENTINEL_SENSOR_SECRET`. Save the values only after the backend revision is
+   deployed so the service restarts with the new configuration. These local
+   environment variables apply only to processes started from this terminal.
+   Clear the clipboard after pasting the secret.
+5. For the broadest connection-table visibility, open VS Code **as Administrator**. Start with a non-capturing configuration check:
 
    ```powershell
    python -m sensor.windows_sensor --check
    ```
 
-   This checks Windows, Npcap visibility, administrator access, HTTPS reachability, and matching server sensor identity; it does **not** start packet capture. If any check fails, resolve the displayed issue before proceeding.
-6. Review the listed Npcap interface names and explicitly start capture on the exact interface you intend to monitor:
+   This lists active Windows interfaces and checks backend reachability/configuration; it does **not** start polling. Resolve any displayed issue before proceeding.
+6. Choose the active laptop hotspot/Wi-Fi interface name printed by `--check` and explicitly start polling:
 
    ```powershell
-   python -m sensor.windows_sensor --run --interface "\Device\NPF_{INTERFACE-GUID}"
+   python -m sensor.windows_sensor --run --interface "Wi-Fi"
    ```
 
-   Replace the example with an exact interface printed by `--check`. Press **Ctrl+C** to stop. Nothing starts capture automatically. The sensor sends a signed heartbeat every 30 seconds and batches flow metadata about every 10 seconds.    Public health status is available at `/api/sensors/health`; verify it from PowerShell with:
+   Replace `"Wi-Fi"` with the exact interface name printed by `--check`. Press **Ctrl+C** to stop. Nothing starts automatically. The sensor checks the TCP connection table every two seconds and sends signed heartbeats every 30 seconds. Public health status is available at `/api/sensors/health`; verify it from PowerShell with:
 
    ```powershell
    Invoke-RestMethod "https://sentinel-x-72rs.onrender.com/api/sensors/health" | Format-List
    ```
 
-   Confirm `configured` and `online` are `True` while the sensor is running. The dashboard also shows sensor status and last event time.
+   A recent heartbeat sets `connected` to `True`, but that alone does not confirm event ingestion. `status` is `CONNECTED` only when a recent telemetry event was also received; otherwise it reports `NO RECENT EVENTS`. A stale heartbeat reports `DISCONNECTED`, and a sensor-reported upload failure reports `ERROR`. The dashboard also shows the last event, last successful upload, and a sanitized last-upload error code if one was reported.
 
 ### Collection and security boundaries
 
-- The sensor aggregates timestamps, IP addresses, ports, protocol, observed packet/byte counts, and a 5-tuple flow identifier. It does not intentionally parse, persist, or transmit packet payload contents. Telemetry is validated and tagged `LIVE` by the backend; clients cannot choose `DEMO`/`LIVE` source labels.
-- **Important packet-capture limitation:** Npcap/Scapy delivers a bounded 128-byte packet prefix to the local Python process so Scapy can decode network and transport headers. The sensor does not retain or upload that prefix, but payload bytes may transiently be present in process memory. Therefore this is not a strict zero-payload capture boundary and cannot guarantee that a credential never appears in that transient prefix. For environments requiring strict payload exclusion, do not run this sensor; use a trusted NetFlow/IPFIX or equivalent metadata-only exporter and an appropriately reviewed adapter.
-- Requests use HTTPS and HMAC-SHA256 signatures over the timestamp, one-time nonce, and exact request body. The backend rejects expired/replayed requests, enforces a request-rate limit, and validates every telemetry field. The sensor's retry queue is memory-only; unsent events are lost when the process exits or its bounded queue overflows.
-- Sensor HMAC protects telemetry writes, but it does not protect the existing dashboard/read APIs. The public deployment warning below still applies: do not send sensitive or production telemetry to the public Render site until server-side user authorization also protects access to stored telemetry.
-- This sensor observes only traffic visible to the selected PC interface. Whole-LAN visibility requires a gateway/router sensor or a managed switch configured with a SPAN/mirror port feeding a dedicated sensor interface. Do not enable port mirroring without network-owner authorization.
+- The sensor emits timestamps, IPv4/IPv6 TCP local/remote addresses and ports, connection state, and a connection identifier when Windows exposes them. It does not read packet contents. Windows' connection table does not provide per-flow packet or byte counts here; those fields are stored as `N/A`, not guessed. UDP remote endpoints are not provided by this TCP-table sensor and are not synthesized.
+- Telemetry is validated and tagged `LIVE` by the backend; clients cannot choose `DEMO`/`LIVE` source labels. Dashboard statistics default to a LIVE-only view, with explicit DEMO and ALL choices. Device inventory is grouped by source.
+- Requests use HTTPS and HMAC-SHA256 signatures over the timestamp, one-time nonce, and exact request body. The backend rejects expired/replayed requests, enforces a request-rate limit, and validates every telemetry field. The local retry queue is memory-only; unsent events are lost when the process exits or its bounded queue overflows. Failed upload codes are reported on the next successful signed heartbeat.
+- The sensor uses HMAC for telemetry writes; the separate dashboard and API require a server-verified web session. Configure and deploy the backend changes before sending telemetry.
+- This sensor observes only TCP connections visible on the selected laptop interface. On a normal phone hotspot, the laptop generally cannot see the phone's other traffic. The dashboard note is intentional: “Monitoring traffic observable on this laptop; other hotspot-device traffic is not guaranteed to be visible.” Whole-LAN visibility needs a gateway/router flow exporter or managed switch mirror feed; a mobile hotspot usually offers neither. Do not enable mirroring without network-owner authorization.
 - LIVE telemetry means observed metadata, not proof of malicious activity. Rules and baselines produce suspicion signals for analyst review, not confirmed attacks. Incidents/alerts are not ground-truth labels.
 
 ### Model status and evaluation
 
-The inference feature order is `packets`, traffic in MB, connections, unknown-destination count, destination port, and protocol code; training, scaling, and inference use the same six-feature order and the existing min/max `FeatureScaler`. Runtime model/scaler artifacts are not present in the repository, so a fresh installation reports **NOT TRAINED** and provides no model score. Dataset and DEMO events are excluded from live-history training and evaluation. The displayed autoencoder score is an anomaly score, not a probability or confidence. Evaluation reports reconstruction-error distribution only; it does not report accuracy, precision, recall, or F1 without labeled ground-truth data. No measured attack-detection accuracy is claimed.
+The inference feature order is `packets`, traffic in MB, connections, unknown-destination count, destination port, and protocol code; training, scaling, and inference use the same six-feature order and the existing min/max `FeatureScaler`. Connection-table LIVE events have no packet/byte counters and are excluded from model scoring/training rather than assigned invented zero values. Runtime model/scaler artifacts are not present in the repository, so a fresh installation reports **NOT TRAINED** and provides no model score. Dataset and DEMO events are excluded from live-history training and evaluation. The displayed autoencoder score is an anomaly score, not a probability or confidence. Evaluation reports reconstruction-error distribution only; it does not report accuracy, precision, recall, or F1 without labeled ground-truth data. No measured attack-detection accuracy is claimed.
 
 ---
 
 ## 🧪 Automated Testing
 
-Run the unit test suite:
-```bash
-python -m pytest
+Run the unit test suite from PowerShell with a temporary database so test
+fixtures cannot modify the application's local database:
+
+```powershell
+$testData = Join-Path $env:TEMP ('sentinel-x-tests-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $testData | Out-Null
+$testExitCode = 1
+try {
+    $env:SENTINEL_DATA_DIR = $testData
+    python -m pytest
+    $testExitCode = $LASTEXITCODE
+} finally {
+    Remove-Item Env:SENTINEL_DATA_DIR -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $testData -Recurse -Force
+}
+if ($testExitCode -ne 0) { exit $testExitCode }
 ```
-The suite covers database migrations, authentication, monitoring, model feature preprocessing/inference, APIs, and sensor telemetry. Use isolated `SENTINEL_DATA_DIR` when running tests to avoid changing a local database.
+
+The suite covers database migrations, authentication, monitoring, model feature
+preprocessing/inference, APIs, and sensor telemetry. `SENTINEL_DATA_DIR` must
+be set before Python imports the application.
 
 ---
 
 ## ⚠️ System & Security Limitations
 
 1. **Detection is not validated attack classification**: Rule and baseline thresholds are configurable heuristics. Anomaly scores are not confidence values. No measured attack-detection accuracy is claimed.
-2. **Scapy Windows Capture Requirements**: Packet capture requires Administrator privileges and Npcap. See the documented bounded-prefix limitation above; strict payload exclusion requires a metadata-only exporter rather than the bundled packet sensor.
+2. **Legacy Scapy capture**: The separate existing web monitor can still use packet capture when explicitly configured. It is not used by the new Windows sensor. Do not use that legacy path if your requirement is strict no-payload capture.

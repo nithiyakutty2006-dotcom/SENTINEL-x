@@ -76,6 +76,7 @@ class ModelManager:
             SELECT * FROM events
             WHERE source_type IN ('LIVE', 'REAL')
               AND severity IN ('LOW', 'NORMAL', 'MEDIUM')
+              AND packets IS NOT NULL AND traffic IS NOT NULL
             ORDER BY id DESC LIMIT 2000
         """).fetchall()
 
@@ -140,6 +141,7 @@ class ModelManager:
         rows = conn.execute("""
             SELECT * FROM events
             WHERE source_type IN ('LIVE', 'REAL')
+              AND packets IS NOT NULL AND traffic IS NOT NULL
             ORDER BY id DESC LIMIT 500
         """).fetchall()
         if len(rows) < 5:

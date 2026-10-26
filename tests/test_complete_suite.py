@@ -21,6 +21,7 @@ client = TestClient(app)
 class TestSentinelXCompleteSuite(unittest.TestCase):
     def setUp(self):
         init_db()
+        client.cookies.clear()
         self.test_password = secrets.token_urlsafe()
         conn = get_db_connection()
         conn.execute(
@@ -28,6 +29,12 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
             ("admin", hash_password(self.test_password), "ADMIN")
         )
         conn.commit()
+        conn.close()
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": self.test_password},
+        )
+        self.assertEqual(login.status_code, 200)
 
     # 1. Syntax & Imports test
     def test_01_imports(self):
@@ -55,6 +62,36 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["user"], {"username": "admin", "role": "ADMIN"})
+        self.assertIn("httponly", response.headers["set-cookie"].lower())
+        session = client.get("/api/auth/session")
+        self.assertEqual(session.status_code, 200)
+        self.assertEqual(session.json()["user"], {"username": "admin", "role": "ADMIN"})
+
+    def test_03aa_session_cookie_secure_flag_matches_request_scheme(self):
+        with patch.dict(os.environ, {"RENDER": "true"}):
+            http_client = TestClient(app, base_url="http://127.0.0.1:8011")
+            http_response = http_client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": self.test_password},
+            )
+            self.assertEqual(http_response.status_code, 200)
+            http_cookie = http_response.headers["set-cookie"].lower()
+            self.assertIn("httponly", http_cookie)
+            self.assertIn("samesite=lax", http_cookie)
+            self.assertNotIn("secure", http_cookie)
+            http_client.close()
+
+            https_client = TestClient(app, base_url="https://127.0.0.1:8011")
+            https_response = https_client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": self.test_password},
+            )
+            self.assertEqual(https_response.status_code, 200)
+            https_cookie = https_response.headers["set-cookie"].lower()
+            self.assertIn("httponly", https_cookie)
+            self.assertIn("samesite=lax", https_cookie)
+            self.assertIn("secure", https_cookie)
+            https_client.close()
 
     def test_03b_login_api_rejects_incorrect_credentials(self):
         response = client.post(
@@ -86,6 +123,94 @@ class TestSentinelXCompleteSuite(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("SENTINEL_ADMIN_USERNAME", response.json()["detail"])
         self.assertIn("SENTINEL_ADMIN_PASSWORD", response.json()["detail"])
+
+    def test_03d_sensitive_apis_reject_unauthenticated_requests(self):
+        unauthenticated = TestClient(app)
+        protected_gets = [
+            "/api/dashboard/stats",
+            "/api/dashboard/risk-history",
+            "/api/events",
+            "/api/events/1",
+            "/api/incidents",
+            "/api/devices",
+            "/api/devices/example",
+            "/api/alerts",
+            "/api/audit",
+            "/api/settings",
+            "/api/monitoring/status",
+            "/api/models/status",
+            "/api/datasets",
+            "/api/models/registry",
+            "/api/models/evaluations",
+            "/api/system/status",
+            "/api/reports/download/csv",
+        ]
+        for path in protected_gets:
+            with self.subTest(path=path):
+                self.assertEqual(unauthenticated.get(path).status_code, 401)
+
+        protected_writes = [
+            ("post", "/api/settings?role=ADMIN&username=admin"),
+            ("post", "/api/monitoring/start?role=ADMIN"),
+            ("post", "/api/models/train?role=ADMIN"),
+            ("patch", "/api/incidents/1?role=ADMIN&username=admin"),
+            ("patch", "/api/alerts/1?role=ADMIN&username=admin"),
+        ]
+        for method, path in protected_writes:
+            with self.subTest(path=path):
+                response = getattr(unauthenticated, method)(
+                    path, json={"status": "RESOLVED"}
+                )
+                self.assertEqual(response.status_code, 401)
+
+        self.assertEqual(unauthenticated.get("/api/sensors/health").status_code, 200)
+        unauthenticated.close()
+
+    def test_03e_role_query_cannot_escalate_viewer_permissions(self):
+        username = f"viewer-{secrets.token_hex(6)}"
+        password = secrets.token_urlsafe()
+        conn = get_db_connection()
+        conn.execute(
+            "INSERT INTO users(username, password, role) VALUES(?,?,?)",
+            (username, hash_password(password), "VIEWER"),
+        )
+        conn.commit()
+        conn.close()
+        viewer_client = TestClient(app)
+        login = viewer_client.post(
+            "/api/auth/login",
+            json={"username": username, "password": password},
+        )
+        self.assertEqual(login.status_code, 200)
+
+        response = viewer_client.post(
+            "/api/settings?role=ADMIN&username=admin",
+            json={
+                "critical_threshold": 80,
+                "high_threshold": 60,
+                "monitor_interval": 1.5,
+                "ml_enabled": "1",
+            },
+        )
+        self.assertEqual(response.status_code, 403)
+        response = viewer_client.patch(
+            "/api/incidents/1?role=ADMIN&username=admin",
+            json={"status": "RESOLVED"},
+        )
+        self.assertEqual(response.status_code, 403)
+        response = viewer_client.patch(
+            "/api/alerts/1?role=ADMIN&username=admin",
+            json={"status": "ACKNOWLEDGED"},
+        )
+        self.assertEqual(response.status_code, 403)
+        response = viewer_client.post("/api/models/train?role=ADMIN")
+        self.assertEqual(response.status_code, 403)
+        viewer_client.close()
+
+    def test_03f_logout_revokes_server_session(self):
+        response = client.post("/api/auth/logout")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.get("/api/auth/session").status_code, 401)
 
     # 4. Role-Based Permissions
     def test_04_role_permissions(self):

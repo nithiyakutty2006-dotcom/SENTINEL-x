@@ -53,9 +53,19 @@ def run_migrations(conn):
         ("flow_id", "TEXT"),
         ("sensor_id", "TEXT"),
         ("event_id", "TEXT"),
+        ("connection_state", "TEXT"),
+        ("endpoint_mode", "TEXT"),
     ):
         if not column_exists("events", column):
             cursor.execute(f"ALTER TABLE events ADD COLUMN {column} {definition}")
+
+    if column_exists("sensors", "sensor_id"):
+        for column, definition in (
+            ("last_upload_epoch", "REAL"),
+            ("last_upload_error", "TEXT"),
+        ):
+            if not column_exists("sensors", column):
+                cursor.execute(f"ALTER TABLE sensors ADD COLUMN {column} {definition}")
 
     conn.commit()
 
@@ -204,7 +214,9 @@ def init_db():
     CREATE TABLE IF NOT EXISTS sensors(
         sensor_id TEXT PRIMARY KEY,
         last_heartbeat_epoch REAL NOT NULL,
-        last_event TEXT
+        last_event TEXT,
+        last_upload_epoch REAL,
+        last_upload_error TEXT
     )
     """)
     cursor.execute("""
@@ -220,6 +232,17 @@ def init_db():
         sensor_id TEXT NOT NULL,
         requested_at REAL NOT NULL
     )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS web_sessions(
+        session_hash TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        expires_at REAL NOT NULL
+    )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_web_sessions_expiry
+        ON web_sessions(expires_at)
     """)
 
     conn.commit()

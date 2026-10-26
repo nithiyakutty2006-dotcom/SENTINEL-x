@@ -89,9 +89,11 @@
             <div class="status-pills">
                 <div class="badge badge-status" id="badgeStatus">● SYSTEM READY</div>
                 <div class="badge badge-mode" id="badgeMode">ENGINE: IDLE</div>
+                <div class="badge badge-mode" id="badgeLiveMode">LIVE — LAPTOP SENSOR: OFFLINE</div>
                 <div class="badge" id="badgeDataSource">DATA SOURCES: NONE</div>
                 <div class="badge" id="badgeSensor">SENSOR: NOT CONFIGURED</div>
-                <div class="badge badge-packets" id="badgePackets">PACKETS: 0</div>
+                <div class="badge" id="badgeSensorUpload">LAST UPLOAD: NONE</div>
+                <div class="badge badge-packets" id="badgePackets">PACKETS: N/A</div>
                 <div class="badge" id="badgeLastPacket" style="color: var(--purple);">LAST PKT: N/A</div>
                 <div class="badge" id="badgeLastEventTime">LAST EVENT: NONE</div>
             </div>
@@ -111,6 +113,20 @@
         <div class="content-section">
             <!-- TAB 1: DASHBOARD -->
             <div id="tab-dashboard" class="tab-content active">
+                <div class="panel-box" style="margin-bottom: 16px;">
+                    <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
+                        <div class="panel-title">DASHBOARD SOURCE</div>
+                        <select id="dashboardSourceFilter" class="form-control" style="width: 180px;"
+                                onchange="fetchDashboardStats(); fetchRiskHistoryChart(); fetchIncidents(); fetchDevices(); fetchAlerts()">
+                            <option value="LIVE" selected>LIVE — LAPTOP</option>
+                            <option value="DEMO">DEMO ONLY</option>
+                            <option value="ALL">ALL SOURCES</option>
+                        </select>
+                    </div>
+                    <p id="sensorVisibilityNote" style="color: var(--text-muted); margin: 8px 0 0;">
+                        Monitoring traffic observable on this laptop; other hotspot-device traffic is not guaranteed to be visible.
+                    </p>
+                </div>
                 <div class="cards-grid">
                     <div class="stat-card">
                         <div class="card-label">TOTAL EVENTS</div>
@@ -190,8 +206,8 @@
                                 <th>Timestamp</th>
                                 <th>Source</th>
                                 <th>Device / IP</th>
-                                <th>Source IP</th>
-                                <th>Destination</th>
+                                <th>Local / Source IP</th>
+                                <th>Remote / Destination IP</th>
                                 <th>Protocol</th>
                                 <th>Risk</th>
                                 <th>Severity</th>
@@ -249,14 +265,15 @@
                                 <th>Timestamp</th>
                                 <th>Source</th>
                                 <th>Device</th>
-                                <th>Src IP</th>
-                                <th>Dst IP</th>
-                                <th>Source Port</th>
-                                <th>Destination Port</th>
+                                <th>Local / Source IP</th>
+                                <th>Remote / Destination IP</th>
+                                <th>Local / Source Port</th>
+                                <th>Remote / Destination Port</th>
                                 <th>Protocol</th>
                                 <th>Packets</th>
                                 <th>Bytes</th>
                                 <th>Traffic</th>
+                                <th>TCP State</th>
                                 <th>Risk</th>
                                 <th>Severity</th>
                                 <th>Model Anomaly Score</th>

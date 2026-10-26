@@ -45,21 +45,25 @@ def detect_anomaly(event):
     factors = []
 
     # 1. Rule-Based Analysis
-    if event.get("packets", 0) > 2000:
+    if (event.get("packets") or 0) > 2000:
         rule_score += 35.0
         factors.append("[Rule] Abnormally High Packet Count (>2000 pkts)")
-    if event.get("traffic", 0.0) > 8.0:
+    if (event.get("traffic") or 0.0) > 8.0:
         rule_score += 30.0
         factors.append("[Rule] Large Data Transfer (>8MB)")
-    if event.get("connections", 0) > 100:
+    if (event.get("connections") or 0) > 100:
         rule_score += 25.0
         factors.append("[Rule] Excessive Connections (>100 conns)")
     if event.get("unknown", 0) > 10:
         rule_score += 20.0
         factors.append("[Rule] Multiple Unknown Destinations (>10)")
-    if event.get("port") in [22, 3389, 4444, 1337, 8080]:
+    if event.get("destination_port_known", True) and event.get("port") in [22, 3389, 4444, 1337, 8080]:
         rule_score += 20.0
         factors.append(f"[Rule] Suspicious Destination Port ({event['port']})")
+    if event.get("packets") is None or event.get("traffic") is None:
+        factors.append("[Telemetry] TCP connection state observed; packet and byte counters unavailable")
+    if event.get("destination_port_known") is False:
+        factors.append("[Telemetry] Local/remote endpoints observed; connection direction is unknown")
 
     # 2. Statistical Baseline Profiling
     row = conn.execute("""
@@ -69,7 +73,12 @@ def detect_anomaly(event):
     """, (device,)).fetchone()
     conn.close()
 
-    if row and row["samples"] >= 3:
+    if (
+        row
+        and row["samples"] >= 3
+        and event.get("packets") is not None
+        and event.get("traffic") is not None
+    ):
         pkt_ratio = event["packets"] / max(row["avg_packets"], 1.0)
         trf_ratio = event["traffic"] / max(row["avg_traffic"], 0.01)
         conn_ratio = event["connections"] / max(row["avg_connections"], 1.0)
@@ -93,7 +102,12 @@ def detect_anomaly(event):
     model_status_text = "NOT TRAINED"
     ml_enabled = get_setting("ml_enabled", "1") == "1"
     
-    if ml_enabled and model_manager.inference.loaded:
+    if (
+        ml_enabled
+        and model_manager.inference.loaded
+        and event.get("packets") is not None
+        and event.get("traffic") is not None
+    ):
         model_status_text = "READY"
         dl_score, is_anomaly, mse = model_manager.inference.predict(event)
         ai_score = dl_score
@@ -102,6 +116,8 @@ def detect_anomaly(event):
             factors.append(f"[Deep Learning Autoencoder] Anomaly Detected (Score: {dl_score:.1f}%, MSE: {mse:.4f})")
     elif not ml_enabled:
         model_status_text = "DISABLED"
+    elif model_manager.inference.loaded:
+        model_status_text = "SKIPPED: COUNTERS UNAVAILABLE"
 
     # Forced simulation override
     if event.get("forced"):
@@ -162,6 +178,10 @@ def process_event(event):
     event["baseline_score"] = baseline_score
     event["factors"] = factors
     event["source_type"] = source_type
+    byte_count = event.get("bytes")
+    if "bytes" not in event:
+        traffic = event.get("traffic")
+        byte_count = int(traffic * 1024 * 1024) if traffic is not None else None
 
     # 1. Insert Event into SQLite
     conn.execute("""
@@ -169,20 +189,25 @@ def process_event(event):
         timestamp, device, source_ip, destination_ip, port, protocol,
         packets, traffic, connections, unknown, risk, severity, ai_score,
         rule_score, baseline_score, factors, source_type, source_port, bytes,
-        flow_id, sensor_id, event_id
+        flow_id, sensor_id, event_id, connection_state, endpoint_mode
     )
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         event["timestamp"], event["device"], event["source_ip"], event["destination_ip"],
         event["port"], event["protocol"], event["packets"], event["traffic"],
         event["connections"], event["unknown"], risk, severity, ai_score,
         rule_score, baseline_score, ", ".join(factors), source_type,
-        event.get("source_port", 0), event.get("bytes", int(event.get("traffic", 0) * 1024 * 1024)),
-        event.get("flow_id"), event.get("sensor_id"), event.get("event_id")
+        event.get("source_port", 0), byte_count,
+        event.get("flow_id"), event.get("sensor_id"), event.get("event_id"),
+        event.get("connection_state"), event.get("endpoint_mode")
     ))
 
     # Keep real, live-sensor, and demo inventory separate from imported datasets.
-    if source_type in {"REAL", "LIVE", "DEMO"}:
+    if (
+        source_type in {"REAL", "LIVE", "DEMO"}
+        and event.get("packets") is not None
+        and event.get("traffic") is not None
+    ):
         update_baseline(event, conn)
 
     # 3. Deduplicated Incident & Alert Triggering
